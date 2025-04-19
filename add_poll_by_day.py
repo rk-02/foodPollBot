@@ -8,15 +8,19 @@ import json
 from typing import Dict, Optional
 import os
 import logging
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # Конфигурация
-BOT_TOKEN = "7672011364:AAE8BjuFYq6YN6CRlj2MiY6yY6tAKJWoZIA"
-#CHAT_ID = -1002611678396
-CHAT_ID = -1002391359004
+BOT_TOKEN = str(os.getenv('BOT_TOKEN'))
+CHAT_ID = int(os.getenv('CHAT_ID')) # тестовый чат
+#CHAT_ID = -1002391359004 # рабочий чат
 TIMEZONE = pytz.timezone('Asia/Yekaterinburg')
-POLL_START = {'hour': 11, 'minutes': 45}
-POLL_SHIFT = 1
-
+POLL_START_HOUR = int(os.getenv('POLL_START_HOUR'))
+POLL_START_MINUTES = int(os.getenv('POLL_START_MINUTES'))
+POLL_SHIFT = int(os.getenv('POLL_SHIFT'))
+    
 with open("schedule.json", "r", encoding="utf-8") as file:
     POLLS = json.load(file)
 
@@ -114,9 +118,9 @@ class TelegramBot:
     async def _poll_scheduler(self):
         while True:
             now = datetime.now(TIMEZONE)
-            print(now.hour, now.minute, POLL_START['hour'], POLL_START['minutes'])
+            print(now.hour, now.minute, POLL_START_HOUR, POLL_START_MINUTES)
 
-            if(now.hour == POLL_START['hour']  and now.minute == POLL_START['minutes']):
+            if(now.hour == POLL_START_HOUR  and now.minute == POLL_START_MINUTES):
                 await self._send_scheduled_poll()
             await asyncio.sleep(60)
 
@@ -150,7 +154,7 @@ class TelegramBot:
     async def cmd_start(self, message: types.Message):
         await self.start_poll_scheduler(message.chat.id)
         await message.answer("Бот запущен!")
-        await message.answer(f"Опрос запланирован на {POLL_START['hour']}:{POLL_START['minutes']}")
+        await message.answer(f"Опрос запланирован на {POLL_START_HOUR}:{POLL_START_MINUTES}")
         await self.post_main_menu_buttons(message.chat.id)
 
     async def callback_get_results(self, callback_query: types.CallbackQuery):
