@@ -156,7 +156,7 @@ class TelegramBot:
         await message.answer("Бот запущен!")
         await message.answer(f"Опрос запланирован на {POLL_START_HOUR}:{POLL_START_MINUTES}")
         await self.post_main_menu_buttons(message.chat.id)
-
+    
     async def callback_get_results(self, callback_query: types.CallbackQuery):
         await callback_query.message.delete()
         
