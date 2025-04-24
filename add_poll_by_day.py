@@ -9,6 +9,7 @@ from typing import Dict, Optional
 import os
 import logging
 from dotenv import load_dotenv
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 
 load_dotenv()
 
@@ -28,7 +29,7 @@ class TelegramBot:
     def __init__(self):
         self.bot = Bot(token=BOT_TOKEN)
         self.dp = Dispatcher()
-        self.last_results_message = None
+        self.last_results_message: Dict[str, int] = {}
         self.last_get_poll_message = None
         self.poll_chats = set()
         self.poll_task = None
@@ -40,16 +41,17 @@ class TelegramBot:
         self.dp.message.register(self.cmd_start, Command("start"))
         self.dp.callback_query.register(self.callback_get_results, lambda c: c.data == "get_results")
         self.dp.callback_query.register(self.callback_edit_poll, lambda c: c.data == "edit_poll")
+        self.dp.callback_query.register(self.callback_change_start_poll_time, lambda c: c.data == "change_start_poll_time")
         self.dp.poll.register(self.handle_poll_update)
-        self.dp.poll_answer.register(self.handle_poll_answer)
+        #self.dp.poll_answer.register(self.handle_poll_update)
     
     def escape_markdown(self, text: str) -> str:
         escape_chars = r'_*[]()~`>#+-=|{}.!'
         return ''.join(f'\\{char}' if char in escape_chars else char for char in text)
         
     async def handle_poll_update(self,poll: types.Poll):
-        if poll.id not in self.poll_ids:
-            return
+        #if poll.id not in self.poll_ids:
+        #    return
 
         print(f"""
         📊 Получено обновление опроса:
@@ -81,6 +83,8 @@ class TelegramBot:
         first_name = poll_answer.user.first_name
         poll_id = poll_answer.poll_id
         chosen_options = poll_answer.option_ids  # Список ID выбранных вариантов (начиная с 0)
+
+        print(poll_answer)
         
         print(f"Пользователь {first_name} (ID: {user_id}) проголосовал в опросе {poll_id}")
         print(f"Выбранные варианты: {chosen_options}")
@@ -118,17 +122,22 @@ class TelegramBot:
     async def _poll_scheduler(self):
         while True:
             now = datetime.now(TIMEZONE)
-            print(now.hour, now.minute, POLL_START_HOUR, POLL_START_MINUTES)
 
             if(now.hour == POLL_START_HOUR  and now.minute == POLL_START_MINUTES):
                 await self._send_scheduled_poll()
             await asyncio.sleep(60)
 
     async def _send_scheduled_poll(self):
-        print("Sending poll...")
         now = datetime.now(TIMEZONE)
 
         poll_index = (now.weekday() + POLL_SHIFT) % 7
+
+        if (poll_index == 5 or poll_index == 6):
+            print('weekday ', poll_index)
+            return
+
+        print("Sending poll...")
+
         poll_date = datetime.now() + timedelta(days=POLL_SHIFT)
 
         polls = POLLS[poll_index]
@@ -144,25 +153,35 @@ class TelegramBot:
 
     async def post_main_menu_buttons(self, chat_id):
         markup = types.InlineKeyboardMarkup(inline_keyboard=[
-            [types.InlineKeyboardButton(text="Получить результаты", callback_data="get_results"),
-             types.InlineKeyboardButton(text="Редактировать опрос", callback_data="edit_poll")]
+            [types.InlineKeyboardButton(text="Получить результаты", callback_data="get_results")
+             #types.InlineKeyboardButton(text="Редактировать опрос", callback_data="edit_poll"),
+             #types.InlineKeyboardButton(text="Изменить время опросов", callback_data="change_start_poll_time")
+             ]
         ])
 
         await self.bot.send_message(chat_id, "Выберите действие:", reply_markup=markup)
 
     # Обработчики
     async def cmd_start(self, message: types.Message):
-        await self.start_poll_scheduler(message.chat.id)
-        await message.answer("Бот запущен!")
-        await message.answer(f"Опрос запланирован на {POLL_START_HOUR}:{POLL_START_MINUTES}")
-        await self.post_main_menu_buttons(message.chat.id)
+        if message.chat.type == 'supergroup':
+            await self.start_poll_scheduler(message.chat.id)
+            await message.answer("Бот запущен!")
+            await message.answer(f"Опрос запланирован на {POLL_START_HOUR}:{POLL_START_MINUTES}")
+            await self.post_main_menu_buttons(message.chat.id)
+        elif message.chat.type == 'private':
+            await self.post_main_menu_buttons(message.chat.id)
     
+    async def callback_change_start_poll_time(self, callback_query: types.CallbackQuery):
+        await callback_query.message.answer('Напишите время проведения опроса в формате ЧЧ:MM \nПример 12:00')
+        
+
     async def callback_get_results(self, callback_query: types.CallbackQuery):
         await callback_query.message.delete()
+        chat_id = str(callback_query.message.chat.id)
         
-        if self.last_results_message:
+        if chat_id in self.last_results_message:
             try:
-                await self.last_results_message.delete()
+                await self.last_results_message[chat_id].delete()
             except:
                 pass
 
@@ -181,9 +200,9 @@ class TelegramBot:
                 
                 message += "\n"  
             
-            self.last_results_message = await callback_query.message.answer(message, parse_mode="MarkdownV2")
+            self.last_results_message[chat_id] = await callback_query.message.answer(message, parse_mode="MarkdownV2")
         else:
-            self.last_results_message = await callback_query.message.answer('Нет голосов')    
+            self.last_results_message[chat_id] = await callback_query.message.answer('Нет голосов')    
 
         await asyncio.sleep(1)
         await self.post_main_menu_buttons(callback_query.message.chat.id)
