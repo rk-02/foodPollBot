@@ -145,7 +145,7 @@ class TelegramBot:
         for current_poll in polls:
             sent_poll = await self.bot.send_poll(
                 chat_id=CHAT_ID,
-                question=f'{current_poll['question']} {poll_date.strftime('%d.%m')}',
+                question=f"{current_poll['question']} {poll_date.strftime('%d.%m')}",
                 options=current_poll['options'],
                 is_anonymous=current_poll['is_anonymous']
             )
