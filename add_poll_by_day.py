@@ -50,8 +50,8 @@ class TelegramBot:
         return ''.join(f'\\{char}' if char in escape_chars else char for char in text)
         
     async def handle_poll_update(self,poll: types.Poll):
-        #if poll.id not in self.poll_ids:
-        #    return
+        if poll.id not in self.poll_ids:
+            return
 
         print(f"""
         📊 Получено обновление опроса:
@@ -124,6 +124,7 @@ class TelegramBot:
             now = datetime.now(TIMEZONE)
 
             if(now.hour == POLL_START_HOUR  and now.minute == POLL_START_MINUTES):
+                self.poll_ids = []
                 await self._send_scheduled_poll()
             await asyncio.sleep(60)
 
@@ -166,8 +167,8 @@ class TelegramBot:
         if message.chat.type == 'supergroup':
             await self.start_poll_scheduler(message.chat.id)
             await message.answer("Бот запущен!")
-            await message.answer(f"Опрос запланирован на {POLL_START_HOUR}:{POLL_START_MINUTES}")
-            await self.post_main_menu_buttons(message.chat.id)
+            #await message.answer(f"Опрос запланирован на {POLL_START_HOUR}:{POLL_START_MINUTES}")
+            #await self.post_main_menu_buttons(message.chat.id)
         elif message.chat.type == 'private':
             await self.post_main_menu_buttons(message.chat.id)
     
@@ -196,6 +197,8 @@ class TelegramBot:
                 message += f"🍽 *{self.escape_markdown(poll_name)}*:\n"
                 
                 for option, votes in zip(poll_data['options'], poll_data['votes']):
+                    if votes == 0:
+                        continue
                     message += f"  \- `{self.escape_markdown(option)}`: _{votes}_ голосов\n" 
                 
                 message += "\n"  
