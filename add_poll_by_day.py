@@ -186,9 +186,14 @@ class TelegramBot:
             except:
                 pass
 
-        now = datetime.now(TIMEZONE) + timedelta(days=POLL_SHIFT)
+        date_string = ''
+        now = datetime.now(TIMEZONE)
 
-        date_string = now.strftime('%d.%m')
+        if(now.hour <= POLL_START_HOUR  and now.minute <= POLL_START_MINUTES):
+            date_string = now.strftime('%d.%m')
+        else:
+            now += timedelta(days=POLL_SHIFT)
+            date_string = now.strftime('%d.%m') 
 
         message = f"🗓 *{self.escape_markdown(date_string)}*\n\n"
 
