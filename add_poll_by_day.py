@@ -47,10 +47,18 @@ class TelegramBot:
         self.dp.callback_query.register(self.callback_change_start_poll_time, lambda c: c.data == "change_start_poll_time")
         self.dp.poll.register(self.handle_poll_update)
         self.dp.poll_answer.register(self.handle_poll_answer)
+        self.dp.message.register(self.handle_text_message) # обработчик на сообщения
+
     
     def escape_markdown(self, text: str) -> str:
         escape_chars = r'_*[]()~`>#+-=|{}.!'
         return ''.join(f'\\{char}' if char in escape_chars else char for char in text)
+    
+    async def handle_text_message(self, message: types.Message):
+        if(message.text == '?'):
+            menu = await self.get_joint_results()
+            await message.answer(menu, parse_mode="MarkdownV2")
+            
         
     async def handle_poll_update(self, poll: types.Poll):
         if poll.id not in self.poll_ids:
@@ -118,8 +126,6 @@ class TelegramBot:
         print(f"Состояние set_dish для даты {date}:")
         print(self.polls_dict[date]['set_dish'])
 
-
-
     async def save_poll_id(self, chat_id: int, message_id: int):
         self.last_polls[chat_id] = message_id
 
@@ -153,6 +159,8 @@ class TelegramBot:
     async def _poll_scheduler(self):
         while True:
             now = datetime.now(TIMEZONE)
+
+            print(now.hour, now.minute)
 
             if(now.hour == POLL_START_HOUR  and now.minute == POLL_START_MINUTES):
                 self.poll_ids = []
@@ -252,22 +260,8 @@ class TelegramBot:
         # Показываем главное меню через секунду
         await asyncio.sleep(1)
         await self.post_main_menu_buttons(callback_query.message.chat.id)
-
-    async def callback_get_joint_results(self, callback_query: types.CallbackQuery):
-        # Удаляем старое сообщение с кнопками, если есть
-        try:
-            await callback_query.message.delete()
-        except:
-            pass
-
-        chat_id = str(callback_query.message.chat.id)
-
-        # Удаляем предыдущий вывод результатов
-        if chat_id in self.last_results_message:
-            try:
-                await self.last_results_message[chat_id].delete()
-            except:
-                pass
+    
+    async def get_joint_results(self):
 
         # Вычисляем нужную дату в формате 'дд.мм'
         now = datetime.now(TIMEZONE)
@@ -302,24 +296,60 @@ class TelegramBot:
         body += "\n"
 
         if set_dish:
-            body += "🍽️ *Вторые блюда\(комплекты\):*\n"
+            body += "🍽️ *Вторые блюда\\(комплекты\\):*\n"
             # Для каждого пользователя выводим его выбор гарнира + второго блюда
+            i = 1
             for user_id, choices in set_dish.items():
                 # Получаем оба варианта — если пользователь ещё не ответил на какую-то часть,
                 # подставляем «—»
                 main = choices.get('Вторые блюда', ['—'])[0]
                 side = choices.get('Гарниры', ['—'])[0]
 
-                body += (
-                    f" Второе блюдо: `{self.escape_markdown(main)}` Гарнир: `{self.escape_markdown(side)}`\n"
-                )
+                if(main == '—'):
+                    body += (
+                        f"{i}\\. {self.escape_markdown(side)}\n"
+                    )
+                
+                if(side == '—'):
+                    body += (
+                        f"{i}\\. {self.escape_markdown(main)}\n"
+                    )
+
+                if(main != '—' and side != '—'):
+                    body += (
+                        f"{i}\\. `{self.escape_markdown(main)}` \\+ `{self.escape_markdown(side)}`\n"
+                    )
+
+                i = i + 1
         else:
             body = "Нет голосов"
 
         # Отправляем и сохраняем ссылку на сообщение
         msg = header + body
+
+        return msg
+        
+
+    async def callback_get_joint_results(self, callback_query: types.CallbackQuery):
+         # Удаляем старое сообщение с кнопками, если есть
+        try:
+            await callback_query.message.delete()
+        except:
+            pass
+
+        chat_id = str(callback_query.message.chat.id)
+
+        # Удаляем предыдущий вывод результатов
+        if chat_id in self.last_results_message:
+            try:
+                await self.last_results_message[chat_id].delete()
+            except:
+                pass
+
+        menu =  await self.get_joint_results()
+
         self.last_results_message[chat_id] = await callback_query.message.answer(
-            msg, parse_mode="MarkdownV2"
+            menu, parse_mode="MarkdownV2"
         )
 
         # Через секунду показываем главное меню
