@@ -55,11 +55,12 @@ class TelegramBot:
         return ''.join(f'\\{char}' if char in escape_chars else char for char in text)
     
     async def handle_text_message(self, message: types.Message):
-        if(message.text == '?'):
+        target_stickers = ['AgADMAADr8ZRGg']
+
+        if message.text == '?' or (message.sticker and message.sticker.file_unique_id in target_stickers):
             menu = await self.get_joint_results()
             await message.answer(menu, parse_mode="MarkdownV2")
-            
-        
+    
     async def handle_poll_update(self, poll: types.Poll):
         if poll.id not in self.poll_ids:
             return
@@ -96,6 +97,9 @@ class TelegramBot:
         poll_id = str(poll_answer.poll_id)
         chosen_options = poll_answer.option_ids
 
+        now = datetime.now(TIMEZONE)
+
+        print(now.hour, now.minute)
         print(f"Пользователь {first_name} (ID: {user_id}) проголосовал в опросе {poll_id}")
         print(f"Выбранные варианты (индексы): {chosen_options}")
 
@@ -198,8 +202,6 @@ class TelegramBot:
         if message.chat.type == 'supergroup':
             await self.start_poll_scheduler(message.chat.id)
             await message.answer("Бот запущен!")
-            #await message.answer(f"Опрос запланирован на {POLL_START_HOUR}:{POLL_START_MINUTES}")
-            #await self.post_main_menu_buttons(message.chat.id)
         elif message.chat.type == 'private':
             await self.post_main_menu_buttons(message.chat.id)
     
