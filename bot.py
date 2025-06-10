@@ -10,6 +10,7 @@ import os
 import logging
 from dotenv import load_dotenv
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+from aiogram.types import BotCommand
 
 load_dotenv()
 
@@ -58,32 +59,26 @@ class TelegramBot:
         target_stickers = ['AgADMAADr8ZRGg']
 
         if message.text == '?' or (message.sticker and message.sticker.file_unique_id in target_stickers):
-            menu = await self.get_joint_results()
-            await message.answer(menu, parse_mode="MarkdownV2")
+            #menu = await self.get_joint_results()
+            message_text = 'Результат отправится автоматически в 18:00'
+            await message.answer(message_text, parse_mode="MarkdownV2")
     
     async def handle_poll_update(self, poll: types.Poll):
         if poll.id not in self.poll_ids:
             return
 
-        # сплитим вопрос на текст + дату
         poll_name, poll_date = poll.question.rsplit(' ', 1)
 
-        # 1) Заполняем основной словарь
-        # 1) Получаем или создаём «корзину» по дате:
         date_bucket = self.polls_dict.setdefault(poll_date, {})
 
-        # 2) В этой «корзине» гарантированно создаём ключ set_dish (он будет общий для всех опросов в этот день):
         date_bucket.setdefault('set_dish', {})
 
-        # 3) Теперь уже добавляем сам опрос без ключа set_dish внутри него:
         date_bucket.setdefault(poll_name, {}).update({
             'id':      poll.id,
             'options': [o.text for o in poll.options],
             'votes':   [o.voter_count for o in poll.options],
         })
 
-        # 2) Заполняем обратную мапу для быстрого поиска по ID
-        #    храним дату и текст вопроса
         self.poll_info_by_id[str(poll.id)] = {
             'poll_question': poll_name,
             'poll_date': poll_date
@@ -166,7 +161,22 @@ class TelegramBot:
 
             print(now.hour, now.minute)
 
-            if(now.hour == POLL_START_HOUR  and now.minute == POLL_START_MINUTES):
+            if now.hour == 17 and now.minute == 00:
+                await self.bot.send_message(
+                    chat_id=CHAT_ID,
+                    text="Напоминалка, результаты отправятся в 19:20"
+                )
+            
+            if now.hour == 18 and now.minute == 00:
+                menu = await self.get_joint_results()
+
+                await self.bot.send_message(
+                    chat_id=CHAT_ID,
+                    text=menu,
+                    parse_mode="MarkdownV2"
+                )
+
+            if(now.hour == 19 and now.minute == 33):
                 self.poll_ids = []
                 await self._send_scheduled_poll()
             await asyncio.sleep(60)
@@ -194,8 +204,6 @@ class TelegramBot:
             )
             
             self.poll_ids.append(sent_poll.poll.id)
-
-        await self.bot.send_message(chat_id, "Выберите действие:", reply_markup=markup)
 
     # Обработчики
     async def cmd_start(self, message: types.Message):
@@ -394,12 +402,12 @@ async def shutdown(bot: TelegramBot):
 if __name__ == "__main__":    
     bot = TelegramBot()
 
-    loop = asyncio.new_event_loop()
-    try:
-        loop.run_until_complete(bot.run())
-    except KeyboardInterrupt:
-        loop.run_until_complete(shutdown(bot))
-    finally:
-        loop.close()
+    async def main():
+        await bot.bot.set_my_commands([])  
 
+        await bot.start_poll_scheduler(CHAT_ID)
+        await bot.dp.start_polling(bot.bot)
+
+    import asyncio
+    asyncio.run(main())
    
