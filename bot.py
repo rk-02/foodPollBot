@@ -164,7 +164,7 @@ class TelegramBot:
             if now.hour == 17 and now.minute == 00:
                 await self.bot.send_message(
                     chat_id=CHAT_ID,
-                    text="Напоминалка, результаты отправятся в 19:20"
+                    text="Напоминалка, результаты отправятся в 18:00"
                 )
             
             if now.hour == 18 and now.minute == 00:
