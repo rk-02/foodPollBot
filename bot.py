@@ -176,7 +176,7 @@ class TelegramBot:
                     parse_mode="MarkdownV2"
                 )
 
-            if(now.hour == 19 and now.minute == 33):
+            if(now.hour == POLL_START_HOUR and now.minute == POLL_START_MINUTES):
                 self.poll_ids = []
                 await self._send_scheduled_poll()
             await asyncio.sleep(60)
