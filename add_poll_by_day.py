@@ -302,8 +302,10 @@ class TelegramBot:
             for user_id, choices in set_dish.items():
                 # Получаем оба варианта — если пользователь ещё не ответил на какую-то часть,
                 # подставляем «—»
-                main = choices.get('Вторые блюда', ['—'])[0]
-                side = choices.get('Гарниры', ['—'])[0]
+                main_list = choices.get('Вторые блюда', ['—'])
+                side_list = choices.get('Гарниры', ['—'])
+                main = main_list[0] if main_list else '—'
+                side = side_list[0] if side_list else '—'
 
                 if(main == '—'):
                     body += (
