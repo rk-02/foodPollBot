@@ -11,16 +11,23 @@ import logging
 from dotenv import load_dotenv
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 
+# Import MongoDB infrastructure
+from infrastructure.config import load_config
+from infrastructure.mongo_storage import MongoStorage
+from infrastructure.menu_manager import MenuManager
+
 load_dotenv()
 
+# Load configuration
+config = load_config()
+
 # Конфигурация
-BOT_TOKEN = str(os.getenv('BOT_TOKEN'))
-CHAT_ID = int(os.getenv('CHAT_ID')) # тестовый чат
-#CHAT_ID = -1002391359004 # рабочий чат
-TIMEZONE = pytz.timezone('Asia/Yekaterinburg')
-POLL_START_HOUR = int(os.getenv('POLL_START_HOUR'))
-POLL_START_MINUTES = int(os.getenv('POLL_START_MINUTES'))
-POLL_SHIFT = int(os.getenv('POLL_SHIFT'))
+BOT_TOKEN = config.bot.bot_token
+CHAT_ID = config.bot.chat_id
+TIMEZONE = pytz.timezone(config.bot.timezone)
+POLL_START_HOUR = config.bot.poll_start_hour
+POLL_START_MINUTES = config.bot.poll_start_minutes
+POLL_SHIFT = config.bot.poll_shift
     
 with open("schedule.json", "r", encoding="utf-8") as file:
     POLLS = json.load(file)
@@ -34,6 +41,13 @@ class TelegramBot:
         self.poll_chats = set()
         self.poll_task = None
         self.last_polls: Dict[int, int] = {}
+        
+        # MongoDB storage and menu manager
+        self.storage = MongoStorage(config.mongo)
+        self.menu_manager = MenuManager(self.storage)
+        self.mongodb_available = False  # Will be set to True if MongoDB connects successfully
+        
+        # Legacy data structures for compatibility
         self.polls_dict = {}
         self.poll_ids = []
         self.set_dish = {}
@@ -48,6 +62,27 @@ class TelegramBot:
         self.dp.poll.register(self.handle_poll_update)
         self.dp.poll_answer.register(self.handle_poll_answer)
         self.dp.message.register(self.handle_text_message) # обработчик на сообщения
+
+    async def initialize(self):
+        """Инициализация бота и подключение к базе данных"""
+        try:
+            # Подключение к MongoDB
+            await self.storage.connect()
+            print("Connected to MongoDB successfully")
+            
+            # Инициализация меню из schedule.json
+            await self.menu_manager.initialize_menu_from_json()
+            print("Menu initialized from schedule.json")
+            
+        except Exception as e:
+            print(f"Failed to initialize bot: {e}")
+            raise
+    
+    async def cleanup(self):
+        """Очистка ресурсов"""
+        if self.mongodb_available:
+            await self.storage.disconnect()
+            print("🔌 Disconnected from MongoDB")
 
     
     def escape_markdown(self, text: str) -> str:
@@ -67,22 +102,32 @@ class TelegramBot:
         # сплитим вопрос на текст + дату
         poll_name, poll_date = poll.question.rsplit(' ', 1)
 
-        # 1) Заполняем основной словарь
-        # 1) Получаем или создаём «корзину» по дате:
+        # Save to MongoDB only if available
+        if self.mongodb_available:
+            try:
+                await self.menu_manager.save_poll_data(
+                    poll_id=str(poll.id),
+                    category=poll_name,
+                    poll_date=poll_date,
+                    question=poll.question,
+                    options=options,
+                    votes=votes
+                )
+            except Exception as e:
+                print(f"Failed to save poll data to MongoDB: {e}")
+
+        # Legacy: Заполняем основной словарь
+        options = [o.text for o in poll.options]
+        votes = [o.voter_count for o in poll.options]
         date_bucket = self.polls_dict.setdefault(poll_date, {})
-
-        # 2) В этой «корзине» гарантированно создаём ключ set_dish (он будет общий для всех опросов в этот день):
         date_bucket.setdefault('set_dish', {})
-
-        # 3) Теперь уже добавляем сам опрос без ключа set_dish внутри него:
         date_bucket.setdefault(poll_name, {}).update({
             'id':      poll.id,
-            'options': [o.text for o in poll.options],
-            'votes':   [o.voter_count for o in poll.options],
+            'options': options,
+            'votes':   votes,
         })
 
-        # 2) Заполняем обратную мапу для быстрого поиска по ID
-        #    храним дату и текст вопроса
+        # Legacy: Заполняем обратную мапу для быстрого поиска по ID
         self.poll_info_by_id[str(poll.id)] = {
             'poll_question': poll_name,
             'poll_date': poll_date
@@ -111,6 +156,22 @@ class TelegramBot:
         options = self.polls_dict[date][question]['options']
         chosen_texts = [options[i] for i in chosen_options]
 
+        # Save to MongoDB only if available
+        if self.mongodb_available:
+            try:
+                await self.menu_manager.save_user_vote_data(
+                    poll_id=poll_id,
+                    user_id=user_id,
+                    user_name=first_name,
+                    option_indices=chosen_options,
+                    poll_date=date,
+                    category=question,
+                    options=options
+                )
+            except Exception as e:
+                print(f"Failed to save user vote to MongoDB: {e}")
+
+        # Legacy: Update in-memory data for compatibility
         if question in ('Вторые блюда', 'Гарниры'):
             # 1) гарантируем, что на уровне даты есть словарь set_dish
             sd = self.polls_dict[date].setdefault('set_dish', {})
@@ -276,54 +337,93 @@ class TelegramBot:
         body = ""
 
         # Если по этой дате есть голоса
-        bucket = self.polls_dict.get(date_string, {})
-        set_dish = bucket.get('set_dish', {})
-
-        first_poll = bucket.get('Первые блюда')
-        if first_poll and 'options' in first_poll:
-            body += "🍲 *Первые блюда:*\n"
-            for opt, cnt in zip(first_poll['options'], first_poll['votes']):
-                if cnt:
-                    body += f"  \\- `{self.escape_markdown(opt)}`: _{cnt}_\n"
-            body += "\n"
-            
-        salad_poll = bucket.get('Салаты')
-        if salad_poll and 'options' in salad_poll:
-            body += "🥗 *Салаты:*\n"
-            for opt, cnt in zip(salad_poll['options'], salad_poll['votes']):
-                if cnt:
-                    body += f"  \\- `{self.escape_markdown(opt)}`: _{cnt}_\n"
-        body += "\n"
-
-        if set_dish:
-            body += "🍽️ *Вторые блюда\\(комплекты\\):*\n"
-            # Для каждого пользователя выводим его выбор гарнира + второго блюда
-            i = 1
-            for user_id, choices in set_dish.items():
-                # Получаем оба варианта — если пользователь ещё не ответил на какую-то часть,
-                # подставляем «—»
-                main_list = choices.get('Вторые блюда', ['—'])
-                side_list = choices.get('Гарниры', ['—'])
-                main = main_list[0] if main_list else '—'
-                side = side_list[0] if side_list else '—'
-
-                if(main == '—'):
-                    body += (
-                        f"{i}\\. {self.escape_markdown(side)}\n"
-                    )
+        try:
+            # Try to get data from MongoDB first (only if available)
+            if self.mongodb_available:
+                results = await self.menu_manager.get_poll_results_for_date(date_string)
                 
-                if(side == '—'):
-                    body += (
-                        f"{i}\\. {self.escape_markdown(main)}\n"
-                    )
+                if results and results.get('polls'):
+                    # Use MongoDB data
+                    first_poll = results['polls'].get('Первые блюда')
+                    if first_poll and first_poll.get('options'):
+                        body += "🍲 *Первые блюда:*\n"
+                        for option in first_poll['options']:
+                            body += f"  \\- `{self.escape_markdown(option['text'])}`: _{option['votes']}_\n"
+                        body += "\n"
+                        
+                    salad_poll = results['polls'].get('Салаты')
+                    if salad_poll and salad_poll.get('options'):
+                        body += "🥗 *Салаты:*\n"
+                        for option in salad_poll['options']:
+                            body += f"  \\- `{self.escape_markdown(option['text'])}`: _{option['votes']}_\n"
+                    body += "\n"
 
-                if(main != '—' and side != '—'):
-                    body += (
-                        f"{i}\\. `{self.escape_markdown(main)}` \\+ `{self.escape_markdown(side)}`\n"
-                    )
+                    # User combinations from MongoDB
+                    user_combinations = results.get('user_combinations', {})
+                    if user_combinations:
+                        body += "🍽️ *Вторые блюда\\(комплекты\\):*\n"
+                        i = 1
+                        for user_id, choices in user_combinations.items():
+                            main_list = choices.get('Вторые блюда', ['—'])
+                            side_list = choices.get('Гарниры', ['—'])
+                            main = main_list[0] if main_list else '—'
+                            side = side_list[0] if side_list else '—'
 
-                i = i + 1
-        else:
+                            if(main == '—'):
+                                body += f"{i}\\. {self.escape_markdown(side)}\n"
+                            elif(side == '—'):
+                                body += f"{i}\\. {self.escape_markdown(main)}\n"
+                            elif(main != '—' and side != '—'):
+                                body += f"{i}\\. `{self.escape_markdown(main)}` \\+ `{self.escape_markdown(side)}`\n"
+                            i += 1
+                    else:
+                        if not body or body.strip() == "":
+                            body = "Нет голосов"
+                    return header + body
+
+            # Fallback to legacy data (always available)
+            bucket = self.polls_dict.get(date_string, {})
+            set_dish = bucket.get('set_dish', {})
+
+            first_poll = bucket.get('Первые блюда')
+            if first_poll and 'options' in first_poll:
+                body += "🍲 *Первые блюда:*\n"
+                for opt, cnt in zip(first_poll['options'], first_poll['votes']):
+                    if cnt:
+                        body += f"  \\- `{self.escape_markdown(opt)}`: _{cnt}_\n"
+                body += "\n"
+                
+            salad_poll = bucket.get('Салаты')
+            if salad_poll and 'options' in salad_poll:
+                body += "🥗 *Салаты:*\n"
+                for opt, cnt in zip(salad_poll['options'], salad_poll['votes']):
+                    if cnt:
+                        body += f"  \\- `{self.escape_markdown(opt)}`: _{cnt}_\n"
+            body += "\n"
+
+            if set_dish:
+                body += "🍽️ *Вторые блюда\\(комплекты\\):*\n"
+                i = 1
+                for user_id, choices in set_dish.items():
+                    main_list = choices.get('Вторые блюда', ['—'])
+                    side_list = choices.get('Гарниры', ['—'])
+                    main = main_list[0] if main_list else '—'
+                    side = side_list[0] if side_list else '—'
+
+                    if(main == '—'):
+                        body += f"{i}\\. {self.escape_markdown(side)}\n"
+                    elif(side == '—'):
+                        body += f"{i}\\. {self.escape_markdown(main)}\n"
+                    elif(main != '—' and side != '—'):
+                        body += f"{i}\\. `{self.escape_markdown(main)}` \\+ `{self.escape_markdown(side)}`\n"
+                    i += 1
+            else:
+                if not body or body.strip() == "":
+                    body = "Нет голосов"
+                    
+        except Exception as e:
+            print(f"Error getting results: {e}")
+            # Final fallback to simple message
             body = "Нет голосов"
 
         # Отправляем и сохраняем ссылку на сообщение
@@ -375,7 +475,11 @@ class TelegramBot:
         await self.post_main_menu_buttons(callback_query.message.chat.id)
 
     async def run(self):
-        await self.dp.start_polling(self.bot)
+        await self.initialize()
+        try:
+            await self.dp.start_polling(self.bot)
+        finally:
+            await self.cleanup()
 
     async def post_main_menu_buttons(self, chat_id):
         markup = types.InlineKeyboardMarkup(inline_keyboard=[
@@ -389,6 +493,8 @@ class TelegramBot:
         await self.bot.send_message(chat_id, "Выберите действие:", reply_markup=markup)
 
 async def shutdown(bot: TelegramBot):
+    if hasattr(bot, 'mongodb_available') and bot.mongodb_available:
+        await bot.cleanup()
     await bot.bot.close()
 
 if __name__ == "__main__":    

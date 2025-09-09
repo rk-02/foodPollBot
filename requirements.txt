@@ -1,0 +1,12 @@
+# Telegram Bot dependencies
+aiogram>=3.0.0
+python-dotenv>=1.0.0
+pytz>=2023.3
+
+# MongoDB dependencies
+motor>=3.3.0
+pymongo>=4.6.0
+
+# Additional utilities
+asyncio
+typing-extensions>=4.0.0
