@@ -26,6 +26,43 @@ POLL_SHIFT = int(os.getenv('POLL_SHIFT'))
 with open("schedule.json", "r", encoding="utf-8") as file:
     POLLS = json.load(file)
 
+class Poll:
+    def __init__(self):
+
+    def _poll_scheduler():
+        while True:
+
+            now = datetime.now(TIMEZONE)
+
+            print(now.hour, now.minute)
+
+            poll_index = (now.weekday() + POLL_SHIFT) % 7
+
+            if (poll_index == 5 or poll_index == 6):
+                await asyncio.sleep(60)
+                continue
+
+            if now.hour == this.REMINDER_HOUR and now.minute == this.REMINDER_MINUTES:
+                await self.bot.send_message(
+                    chat_id=CHAT_ID,
+                    text="Напоминалка, результаты отправятся в 18:00"
+                )
+            
+            if now.hour == this.SEND_HOUR and now.minute == SEND_HOUR:
+                menu = await self.get_joint_results()
+
+                await self.bot.send_message(
+                    chat_id=CHAT_ID,
+                    text=menu,
+                    parse_mode="MarkdownV2"
+                )
+
+            if(now.hour == POLL_START_HOUR and now.minute == POLL_START_MINUTES):
+                self.poll_ids = []
+                await self._send_scheduled_poll()
+            await asyncio.sleep(60)
+
+
 class TelegramBot:
     def __init__(self):
         self.bot = Bot(token=BOT_TOKEN)
@@ -160,6 +197,12 @@ class TelegramBot:
             now = datetime.now(TIMEZONE)
 
             print(now.hour, now.minute)
+
+            poll_index = (now.weekday() + POLL_SHIFT) % 7
+
+            if (poll_index == 5 or poll_index == 6):
+                await asyncio.sleep(60)
+                continue
 
             if now.hour == 17 and now.minute == 00:
                 await self.bot.send_message(
@@ -389,8 +432,6 @@ class TelegramBot:
         markup = types.InlineKeyboardMarkup(inline_keyboard=[
             [types.InlineKeyboardButton(text="Получить результаты", callback_data="get_results"),
              types.InlineKeyboardButton(text="Сгруппированный результат", callback_data="get_group_results")
-             #types.InlineKeyboardButton(text="Редактировать опрос", callback_data="edit_poll"),
-             #types.InlineKeyboardButton(text="Изменить время опросов", callback_data="change_start_poll_time")
              ]
         ])
 
