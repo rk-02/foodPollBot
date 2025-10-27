@@ -27,9 +27,7 @@ with open("schedule.json", "r", encoding="utf-8") as file:
     POLLS = json.load(file)
 
 class Poll:
-    def __init__(self):
-
-    def _poll_scheduler():
+    async def _poll_scheduler():
         while True:
 
             now = datetime.now(TIMEZONE)
