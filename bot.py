@@ -8,6 +8,7 @@ import json
 from typing import Dict, Optional
 import os
 import logging
+from collections import Counter
 from dotenv import load_dotenv
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 from aiogram.types import BotCommand
@@ -74,6 +75,16 @@ class TelegramBot:
         self.poll_ids = []
         self.set_dish = {}
         self.poll_info_by_id = {}
+        self.orders_history: Dict[str, Dict[str, Dict[str, str]]] = {}
+
+        # Загрузка истории заказов, если файл существует
+        try:
+            with open("orders_history.json", "r", encoding="utf-8") as f:
+                self.orders_history = json.load(f)
+        except FileNotFoundError:
+            self.orders_history = {}
+        except json.JSONDecodeError:
+            self.orders_history = {}
 
         # Регистрация обработчиков
         self.dp.message.register(self.cmd_start, Command("start"))
@@ -81,6 +92,7 @@ class TelegramBot:
         self.dp.callback_query.register(self.callback_get_joint_results, lambda c: c.data == "get_group_results")
         self.dp.callback_query.register(self.callback_edit_poll, lambda c: c.data == "edit_poll")
         self.dp.callback_query.register(self.callback_change_start_poll_time, lambda c: c.data == "change_start_poll_time")
+        self.dp.callback_query.register(self.callback_my_usual, lambda c: c.data == "my_usual")
         self.dp.poll.register(self.handle_poll_update)
         self.dp.poll_answer.register(self.handle_poll_answer)
         self.dp.message.register(self.handle_text_message) # обработчик на сообщения
@@ -154,6 +166,22 @@ class TelegramBot:
 
             # 3) добавляем/обновляем выбор под ключом вопроса
             user_entry[question] = chosen_texts
+
+            # Если у пользователя есть и второе блюдо, и гарнир на эту дату — сохраняем в историю
+            main = user_entry.get('Вторые блюда')
+            side = user_entry.get('Гарниры')
+            if main and side:
+                user_key = str(user_id)
+                date_entry = self.orders_history.setdefault(user_key, {})
+                date_entry[date] = {
+                    'Вторые блюда': main[0],
+                    'Гарниры': side[0],
+                }
+                try:
+                    with open("orders_history.json", "w", encoding="utf-8") as f:
+                        json.dump(self.orders_history, f, ensure_ascii=False, indent=2)
+                except Exception as e:
+                    print(f"Не удалось сохранить orders_history: {e}")
 
         # отладочный вывод: теперь в self.polls_dict[date]['set_dish'][user_id]
         # будет что-то вроде {'Вторые блюда': [...], 'Гарниры': [...]}
@@ -251,12 +279,96 @@ class TelegramBot:
         if message.chat.type == 'supergroup':
             await self.start_poll_scheduler(message.chat.id)
             await message.answer("Бот запущен!")
+            await self.post_group_menu_buttons(message.chat.id)
         elif message.chat.type == 'private':
             await self.post_main_menu_buttons(message.chat.id)
     
     async def callback_change_start_poll_time(self, callback_query: types.CallbackQuery):
         await callback_query.message.answer('Напишите время проведения опроса в формате ЧЧ:MM \nПример 12:00')
-        
+
+    def get_my_usual_text(self, user_id: int) -> str:
+        user_key = str(user_id)
+        user_history = self.orders_history.get(user_key, {})
+
+        if not user_history:
+            return "Пока нет истории заказов. Голосуй в опросах — после нескольких заказов подскажу твой обычный выбор."
+
+        mains = []
+        sides = []
+        for _date, dishes in user_history.items():
+            main = dishes.get('Вторые блюда')
+            side = dishes.get('Гарниры')
+            if main:
+                mains.append(main)
+            if side:
+                sides.append(side)
+
+        if not mains and not sides:
+            return "Пока нет истории заказов. Голосуй в опросах — после нескольких заказов подскажу твой обычный выбор."
+
+        main_counter = Counter(mains)
+        side_counter = Counter(sides)
+        usual_main = main_counter.most_common(1)[0][0] if mains else '—'
+        usual_side = side_counter.most_common(1)[0][0] if sides else '—'
+
+        # Дата опроса на сегодня
+        now = datetime.now(TIMEZONE)
+        if now.hour < POLL_START_HOUR and now.minute < POLL_START_MINUTES:
+            date_string = now.strftime('%d.%m')
+        else:
+            now += timedelta(days=POLL_SHIFT)
+            date_string = now.strftime('%d.%m')
+
+        # Меню на сегодня: сначала пробуем из актуальных опросов, иначе из POLLS по дню недели
+        bucket = self.polls_dict.get(date_string, {})
+        todays_mains = []
+        todays_sides = []
+
+        main_poll = bucket.get('Вторые блюда')
+        side_poll = bucket.get('Гарниры')
+        if main_poll and 'options' in main_poll:
+            todays_mains = main_poll['options']
+        if side_poll and 'options' in side_poll:
+            todays_sides = side_poll['options']
+
+        if not todays_mains and not todays_sides:
+            # Падаем обратно на расписание POLLS
+            # вычисляем индекс так же, как в _send_scheduled_poll
+            poll_index = (datetime.now(TIMEZONE).weekday() + POLL_SHIFT) % 7
+            if 0 <= poll_index < len(POLLS):
+                for poll_cfg in POLLS[poll_index]:
+                    if poll_cfg.get("question") == "Вторые блюда":
+                        todays_mains = poll_cfg.get("options", [])
+                    if poll_cfg.get("question") == "Гарниры":
+                        todays_sides = poll_cfg.get("options", [])
+
+        lines = []
+        lines.append(f"Ты чаще всего заказываешь: {usual_main} + {usual_side}.")
+
+        if todays_mains or todays_sides:
+            if todays_mains:
+                mains_str = ", ".join(todays_mains)
+                lines.append(f"Сегодня вторые блюда: {mains_str}.")
+            if todays_sides:
+                sides_str = ", ".join(todays_sides)
+                lines.append(f"Сегодня гарниры: {sides_str}.")
+
+            if usual_main in todays_mains and usual_side in todays_sides:
+                lines.append(f"Рекомендуем как обычно: {usual_main} + {usual_side}.")
+            else:
+                lines.append("Твоего обычного набора сегодня может не быть целиком в меню.")
+
+        return "\n".join(lines)
+
+    async def callback_my_usual(self, callback_query: types.CallbackQuery):
+        user_id = callback_query.from_user.id
+        text = self.get_my_usual_text(user_id)
+
+        try:
+            await self.bot.send_message(user_id, text)
+            await callback_query.answer("Отправлено в личку")
+        except Exception:
+            await callback_query.answer("Напиши боту в личку /start, чтобы получать заказ.", show_alert=True)
 
     async def callback_get_results(self, callback_query: types.CallbackQuery):
         # Удаляем предыдущее сообщение с меню, если есть
@@ -310,8 +422,11 @@ class TelegramBot:
 
         # Показываем главное меню через секунду
         await asyncio.sleep(1)
-        await self.post_main_menu_buttons(callback_query.message.chat.id)
-    
+        if callback_query.message.chat.type == 'supergroup':
+            await self.post_group_menu_buttons(callback_query.message.chat.id)
+        else:
+            await self.post_main_menu_buttons(callback_query.message.chat.id)
+
     async def get_joint_results(self):
 
         # Вычисляем нужную дату в формате 'дд.мм'
@@ -403,9 +518,22 @@ class TelegramBot:
             menu, parse_mode="MarkdownV2"
         )
 
+        # В группе — кто и во сколько обновил результаты
+        if callback_query.message.chat.type == 'supergroup':
+            user = callback_query.from_user
+            name = user.first_name or user.username or f"ID{user.id}"
+            if user.last_name:
+                name += f" {user.last_name}"
+            now = datetime.now(TIMEZONE)
+            time_str = now.strftime("%H:%M")
+            await callback_query.message.answer(f"Результаты обновил(а) {name} в {time_str}.")
+
         # Через секунду показываем главное меню
         await asyncio.sleep(1)
-        await self.post_main_menu_buttons(callback_query.message.chat.id)
+        if callback_query.message.chat.type == 'supergroup':
+            await self.post_group_menu_buttons(callback_query.message.chat.id)
+        else:
+            await self.post_main_menu_buttons(callback_query.message.chat.id)
 
     async def callback_edit_poll(self, callback_query: types.CallbackQuery):
         try:
@@ -433,6 +561,13 @@ class TelegramBot:
              ]
         ])
 
+        await self.bot.send_message(chat_id, "Выберите действие:", reply_markup=markup)
+
+    async def post_group_menu_buttons(self, chat_id):
+        markup = types.InlineKeyboardMarkup(inline_keyboard=[
+            [types.InlineKeyboardButton(text="Обновить результаты", callback_data="get_group_results"),
+             types.InlineKeyboardButton(text="Мне как обычно", callback_data="my_usual")]
+        ])
         await self.bot.send_message(chat_id, "Выберите действие:", reply_markup=markup)
 
 async def shutdown(bot: TelegramBot):
