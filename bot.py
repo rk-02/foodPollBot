@@ -8,6 +8,8 @@ import json
 from typing import Dict, Optional
 import os
 import logging
+import time
+import uuid
 from dotenv import load_dotenv
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 from aiogram.types import BotCommand
@@ -26,7 +28,27 @@ POLL_SHIFT = int(os.getenv('POLL_SHIFT'))
 with open("schedule.json", "r", encoding="utf-8") as file:
     POLLS = json.load(file)
 
-class Poll:
+
+def _dbg(location: str, message: str, data: dict, run_id: str, hypothesis_id: str) -> None:  # pragma: no cover
+    # region agent log
+    try:
+        payload = {
+            "sessionId": "e7ee70",
+            "id": f"log_{uuid.uuid4().hex}",
+            "timestamp": int(time.time() * 1000),
+            "location": location,
+            "message": message,
+            "data": data,
+            "runId": run_id,
+            "hypothesisId": hypothesis_id,
+        }
+        with open("debug-e7ee70.log", "a", encoding="utf-8") as f:
+            f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+    # endregion agent log
+
+class Poll:  # pragma: no cover
     async def _poll_scheduler():
         while True:
 
@@ -99,7 +121,22 @@ class TelegramBot:
             await message.answer(message_text, parse_mode="MarkdownV2")
     
     async def handle_poll_update(self, poll: types.Poll):
+        run_id = "simultaneous_vote_v1"
+        _dbg(
+            "bot.py:handle_poll_update:entry",
+            "poll update received",
+            {"poll_id": str(poll.id), "question": poll.question},
+            run_id,
+            "H1",
+        )
         if poll.id not in self.poll_ids:
+            _dbg(
+                "bot.py:handle_poll_update:skip_unknown_poll",
+                "poll not in tracked ids",
+                {"poll_id": str(poll.id), "tracked_count": len(self.poll_ids)},
+                run_id,
+                "H3",
+            )
             return
 
         poll_name, poll_date = poll.question.rsplit(' ', 1)
@@ -118,14 +155,34 @@ class TelegramBot:
             'poll_question': poll_name,
             'poll_date': poll_date
         }
+        _dbg(
+            "bot.py:handle_poll_update:stored_info",
+            "poll info stored",
+            {
+                "poll_id": str(poll.id),
+                "poll_name": poll_name,
+                "poll_date": poll_date,
+                "known_info_count": len(self.poll_info_by_id),
+            },
+            run_id,
+            "H1",
+        )
 
         print(self.polls_dict)
 
     async def handle_poll_answer(self, poll_answer: types.PollAnswer):
+        run_id = "simultaneous_vote_v1"
         user_id = poll_answer.user.id
         first_name = poll_answer.user.first_name
         poll_id = str(poll_answer.poll_id)
         chosen_options = poll_answer.option_ids
+        _dbg(
+            "bot.py:handle_poll_answer:entry",
+            "poll answer received",
+            {"poll_id": poll_id, "user_id": user_id, "option_ids": chosen_options},
+            run_id,
+            "H2",
+        )
 
         now = datetime.now(TIMEZONE)
 
@@ -136,6 +193,13 @@ class TelegramBot:
         info = self.poll_info_by_id.get(poll_id)
         if not info:
             print(f"Не найдено info для poll_id={poll_id}")
+            _dbg(
+                "bot.py:handle_poll_answer:missing_info",
+                "poll info missing for answer",
+                {"poll_id": poll_id, "known_info_count": len(self.poll_info_by_id)},
+                run_id,
+                "H1",
+            )
             return
 
         question = info['poll_question']   # «Вторые блюда» или «Гарниры»
@@ -144,6 +208,18 @@ class TelegramBot:
         # текстовые варианты для этого опроса
         options = self.polls_dict[date][question]['options']
         chosen_texts = [options[i] for i in chosen_options]
+        _dbg(
+            "bot.py:handle_poll_answer:resolved_choice",
+            "resolved answer to texts",
+            {
+                "poll_id": poll_id,
+                "question": question,
+                "date": date,
+                "chosen_texts": chosen_texts,
+            },
+            run_id,
+            "H2",
+        )
 
         if question in ('Вторые блюда', 'Гарниры'):
             # 1) гарантируем, что на уровне даты есть словарь set_dish
@@ -154,6 +230,19 @@ class TelegramBot:
 
             # 3) добавляем/обновляем выбор под ключом вопроса
             user_entry[question] = chosen_texts
+            _dbg(
+                "bot.py:handle_poll_answer:user_entry_updated",
+                "updated set_dish user entry",
+                {
+                    "date": date,
+                    "user_id": user_id,
+                    "user_entry_keys": list(user_entry.keys()),
+                    "user_entry": user_entry,
+                    "set_dish_users_count": len(sd),
+                },
+                run_id,
+                "H4",
+            )
 
         # отладочный вывод: теперь в self.polls_dict[date]['set_dish'][user_id]
         # будет что-то вроде {'Вторые блюда': [...], 'Гарниры': [...]}
@@ -190,7 +279,7 @@ class TelegramBot:
         if not self.poll_task or self.poll_task.done():
             self.poll_task = asyncio.create_task(self._poll_scheduler())
 
-    async def _poll_scheduler(self):
+    async def _poll_scheduler(self):  # pragma: no cover
         while True:
             now = datetime.now(TIMEZONE)
 
@@ -251,6 +340,7 @@ class TelegramBot:
         if message.chat.type == 'supergroup':
             await self.start_poll_scheduler(message.chat.id)
             await message.answer("Бот запущен!")
+            await self.post_group_menu_buttons(message.chat.id)
         elif message.chat.type == 'private':
             await self.post_main_menu_buttons(message.chat.id)
     
@@ -353,8 +443,10 @@ class TelegramBot:
             for user_id, choices in set_dish.items():
                 # Получаем оба варианта — если пользователь ещё не ответил на какую-то часть,
                 # подставляем «—»
-                main = choices.get('Вторые блюда', ['—'])[0]
-                side = choices.get('Гарниры', ['—'])[0]
+                main_choices = choices.get('Вторые блюда') or ['—']
+                side_choices = choices.get('Гарниры') or ['—']
+                main = main_choices[0] if len(main_choices) > 0 else '—'
+                side = side_choices[0] if len(side_choices) > 0 else '—'
 
                 if(main == '—'):
                     body += (
@@ -403,9 +495,20 @@ class TelegramBot:
             menu, parse_mode="MarkdownV2"
         )
 
+        if callback_query.message.chat.type == 'supergroup':
+            user = callback_query.from_user
+            name = user.first_name or user.username or f"ID{user.id}"
+            if user.last_name:
+                name += f" {user.last_name}"
+            time_str = datetime.now(TIMEZONE).strftime("%H:%M")
+            await callback_query.message.answer(f"Результаты обновил(а) {name} в {time_str}.")
+
         # Через секунду показываем главное меню
         await asyncio.sleep(1)
-        await self.post_main_menu_buttons(callback_query.message.chat.id)
+        if callback_query.message.chat.type == 'supergroup':
+            await self.post_group_menu_buttons(callback_query.message.chat.id)
+        else:
+            await self.post_main_menu_buttons(callback_query.message.chat.id)
 
     async def callback_edit_poll(self, callback_query: types.CallbackQuery):
         try:
@@ -430,15 +533,21 @@ class TelegramBot:
         markup = types.InlineKeyboardMarkup(inline_keyboard=[
             [types.InlineKeyboardButton(text="Получить результаты", callback_data="get_results"),
              types.InlineKeyboardButton(text="Сгруппированный результат", callback_data="get_group_results")
-             ]
+             ],
         ])
 
         await self.bot.send_message(chat_id, "Выберите действие:", reply_markup=markup)
 
-async def shutdown(bot: TelegramBot):
+    async def post_group_menu_buttons(self, chat_id):
+        markup = types.InlineKeyboardMarkup(inline_keyboard=[
+            [types.InlineKeyboardButton(text="Обновить результаты", callback_data="get_group_results")]
+        ])
+        await self.bot.send_message(chat_id, "Выберите действие:", reply_markup=markup)
+
+async def shutdown(bot: TelegramBot):  # pragma: no cover
     await bot.bot.close()
 
-if __name__ == "__main__":    
+if __name__ == "__main__":  # pragma: no cover
     bot = TelegramBot()
 
     async def main():
