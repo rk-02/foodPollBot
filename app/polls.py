@@ -11,6 +11,8 @@ Voting is single-select inside one category (a second tap on your choice clears
 it, a tap on another option switches).
 """
 
+from collections import Counter
+
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from .config import CATEGORIES, CATEGORY_EMOJI
@@ -223,6 +225,18 @@ def user_votes(storage: Storage, date: str) -> dict:
     return result
 
 
+# Categories shown in the grouped result (no soup; second + side are merged
+# into a single "Вторые блюда + гарниры" combo tally).
+RESULT_CATEGORIES = ("Вторые блюда", "Гарниры", "Салаты")
+
+
+def _combo_key(picks: dict) -> str | None:
+    second, side = picks.get("Вторые блюда"), picks.get("Гарниры")
+    if second and side:
+        return f"{second} + {side}"
+    return second or side or None
+
+
 def results_text(storage: Storage, date: str) -> str:
     day = get_day(storage, date)
     if not day or not day.get("categories"):
@@ -230,35 +244,49 @@ def results_text(storage: Storage, date: str) -> str:
 
     lines = [f"🗓 {date}", ""]
     any_votes = False
-    for cat in CATEGORIES:
-        entry = day["categories"].get(cat)
-        if not entry:
-            continue
-        tallies = [
-            (opt, len(entry.get("votes", {}).get(opt, [])))
-            for opt in entry["options"]
-        ]
-        tallies = [t for t in tallies if t[1] > 0]
-        if not tallies:
-            continue
+    combos = user_votes(storage, date)
+
+    # Второе + гарнир — комбинациями, а не по отдельности
+    combo_counter = Counter()
+    for picks in combos.values():
+        key = _combo_key(picks)
+        if key:
+            combo_counter[key] += 1
+    if combo_counter:
         any_votes = True
-        lines.append(f"{CATEGORY_EMOJI.get(cat, '🍴')} {cat}:")
-        for opt, n in sorted(tallies, key=lambda t: (-t[1], t[0].lower())):
-            lines.append(f"  • {opt}: {n}")
+        lines.append("🍽 Вторые блюда + гарниры:")
+        for key, n in sorted(combo_counter.items(), key=lambda kv: (-kv[1], kv[0].lower())):
+            lines.append(f"  • {key}: {n}")
         lines.append("")
 
-    combos = user_votes(storage, date)
-    if combos:
+    # Салаты — обычным подсчётом
+    salad = day["categories"].get("Салаты")
+    if salad:
+        tallies = [
+            (opt, len(salad.get("votes", {}).get(opt, [])))
+            for opt in salad["options"]
+        ]
+        tallies = [t for t in tallies if t[1] > 0]
+        if tallies:
+            any_votes = True
+            lines.append(f"{CATEGORY_EMOJI['Салаты']} Салаты:")
+            for opt, n in sorted(tallies, key=lambda t: (-t[1], t[0].lower())):
+                lines.append(f"  • {opt}: {n}")
+            lines.append("")
+
+    # По людям (без супа)
+    people = [
+        (uid, picks) for uid, picks in combos.items()
+        if any(picks.get(c) for c in RESULT_CATEGORIES)
+    ]
+    if people:
         any_votes = True
         names = day.get("names", {})
+        people.sort(key=lambda kv: names.get(str(kv[0]), str(kv[0])).lower())
         lines.append("👥 По людям:")
-        ordered = sorted(
-            combos.items(),
-            key=lambda kv: names.get(str(kv[0]), str(kv[0])).lower(),
-        )
-        for i, (uid, picks) in enumerate(ordered, 1):
+        for i, (uid, picks) in enumerate(people, 1):
             name = names.get(str(uid), f"ID{uid}")
-            parts = [picks[c] for c in CATEGORIES if picks.get(c)]
+            parts = [picks[c] for c in RESULT_CATEGORIES if picks.get(c)]
             lines.append(f"{i}. {name} — " + " + ".join(parts))
 
     if not any_votes:

@@ -121,7 +121,7 @@ class FoodPollBot:
         category = CATEGORIES[cidx]
         try:
             await cq.message.edit_reply_markup(
-                reply_markup=polls.poll_keyboard(entry, category, date)
+                reply_markup=polls.poll_keyboard(entry, category, date, cq.from_user.id)
             )
         except TelegramBadRequest:
             pass
@@ -154,7 +154,7 @@ class FoodPollBot:
                 await self.bot.edit_message_reply_markup(
                     chat_id=cq.message.chat.id,
                     message_id=entry["message_id"],
-                    reply_markup=polls.poll_keyboard(entry, category, date),
+                    reply_markup=polls.poll_keyboard(entry, category, date, user.id),
                 )
             except TelegramBadRequest:
                 pass
@@ -186,6 +186,9 @@ class FoodPollBot:
         private = chat.type == "private"
         date, _ = current_poll_date(self.storage)
         text = polls.results_text(self.storage, date)
+        if not private:
+            hhmm = now(self.tz).strftime("%H:%M")
+            text += f"\n\nОбновил(а) {self._display_name(cq.from_user)} в {hhmm}"
 
         prev = self.last_results_msg.get(chat.id)
         if prev:

@@ -106,24 +106,48 @@ def test_describe_change_multi_add_remove(storage):
 
 
 @pytest.mark.unit
-def test_results_text_groups_and_lists_people(storage):
+def test_results_text_merges_second_side_drops_soup(storage):
     polls.start_day(storage, "10.09", "2026-09-10", 2)
     polls.register_poll(storage, "10.09", "Первые блюда", 1, ["Куриный", "Щи"])
     polls.register_poll(storage, "10.09", "Вторые блюда", 2, ["Гуляш", "Тефтели"])
     polls.register_poll(storage, "10.09", "Гарниры", 3, ["Рис", "Гречка"])
+    polls.register_poll(storage, "10.09", "Салаты", 4, ["Зимний", "Обжорка"])
+    # Иван: суп Куриный, второе Гуляш, гарнир Гречка, салат Зимний
     polls.toggle_vote(storage, "10.09", 0, 0, 1)
     polls.toggle_vote(storage, "10.09", 1, 0, 1)
     polls.toggle_vote(storage, "10.09", 2, 1, 1)
+    polls.toggle_vote(storage, "10.09", 3, 0, 1)
     polls.remember_name(storage, "10.09", 1, "Иван")
+    # Пётр: второе Гуляш, гарнир Рис
     polls.toggle_vote(storage, "10.09", 1, 0, 2)
+    polls.toggle_vote(storage, "10.09", 2, 0, 2)
     polls.remember_name(storage, "10.09", 2, "Пётр")
 
     text = polls.results_text(storage, "10.09")
     assert "🗓 10.09" in text
-    assert "Гуляш: 2" in text
-    assert "👥 По людям:" in text
-    assert "Иван — Куриный + Гуляш + Гречка" in text
-    assert "Пётр — Гуляш" in text
+    # merged second + side tally
+    assert "🍽 Вторые блюда + гарниры:" in text
+    assert "Гуляш + Гречка: 1" in text
+    assert "Гуляш + Рис: 1" in text
+    # no soup, no standalone second/side sections
+    assert "Куриный" not in text
+    assert "Первые блюда" not in text
+    assert "🍚 Гарниры:" not in text
+    # salads kept
+    assert "🥗 Салаты:" in text and "Зимний: 1" in text
+    # per-person, soup excluded
+    assert "Иван — Гуляш + Гречка + Зимний" in text
+    assert "Пётр — Гуляш + Рис" in text
+
+
+@pytest.mark.unit
+def test_results_text_side_only_vote_still_shows(storage):
+    polls.start_day(storage, "10.09", "2026-09-10", 2)
+    polls.register_poll(storage, "10.09", "Гарниры", 1, ["Рис", "Гречка"])
+    polls.toggle_vote(storage, "10.09", 2, 0, 7)
+    text = polls.results_text(storage, "10.09")
+    assert "🍽 Вторые блюда + гарниры:" in text
+    assert "Рис: 1" in text
 
 
 @pytest.mark.unit
@@ -131,6 +155,10 @@ def test_results_text_no_data_and_no_votes(storage):
     assert "нет опросов" in polls.results_text(storage, "01.02").lower()
     polls.start_day(storage, "10.09", "2026-09-10", 2)
     polls.register_poll(storage, "10.09", "Гарниры", 1, ["Рис"])
+    assert "Нет голосов" in polls.results_text(storage, "10.09")
+    # a soup-only vote is not enough for the grouped result
+    polls.register_poll(storage, "10.09", "Первые блюда", 2, ["Куриный"])
+    polls.toggle_vote(storage, "10.09", 0, 0, 5)
     assert "Нет голосов" in polls.results_text(storage, "10.09")
 
 

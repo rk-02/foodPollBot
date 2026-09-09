@@ -45,6 +45,10 @@ async def test_poll_vote_records_and_answers(app, seeded_poll, make_cq):
     assert app.storage.load_poll_state()["10.09"]["names"]["5"] == "Ира"
     cq.message.edit_reply_markup.assert_awaited_once()
     cq.answer.assert_awaited_once()
+    # the voter's own choice comes back highlighted
+    kb = cq.message.edit_reply_markup.await_args.kwargs["reply_markup"]
+    labels = [b.text for row in kb.inline_keyboard for b in row]
+    assert any(t.startswith(polls.VOTE_MARK) for t in labels)
 
 
 @pytest.mark.asyncio
@@ -158,6 +162,38 @@ async def test_menu_results_deletes_previous(app, make_cq):
     cq = make_cq("menu:results", chat_id=-100, chat_type="supergroup")
     await app.on_menu_results(cq)
     app.bot.delete_message.assert_any_await(-100, 777)
+
+
+@pytest.mark.asyncio
+async def test_menu_results_in_group_names_who_updated(app, make_cq):
+    from app.timeutil import current_poll_date
+    date_str, _ = current_poll_date(app.storage)
+    polls.start_day(app.storage, date_str, "2026-01-01", 0)
+    polls.register_poll(app.storage, date_str, "Гарниры", 9, ["Рис"])
+    polls.toggle_vote(app.storage, date_str, 2, 0, 1)
+
+    cq = make_cq("menu:results", chat_id=-100, chat_type="supergroup",
+                 user_id=3, first_name="Женя")
+    await app.on_menu_results(cq)
+
+    posted = [c for c in app.bot.send_message.await_args_list
+              if c.args and c.args[0] == -100]
+    assert any("Обновил(а) Женя в " in c.args[1] for c in posted)
+
+
+@pytest.mark.asyncio
+async def test_menu_results_in_private_has_no_updater_line(app, make_cq):
+    from app.timeutil import current_poll_date
+    date_str, _ = current_poll_date(app.storage)
+    polls.start_day(app.storage, date_str, "2026-01-01", 0)
+    polls.register_poll(app.storage, date_str, "Гарниры", 9, ["Рис"])
+    polls.toggle_vote(app.storage, date_str, 2, 0, 1)
+
+    cq = make_cq("menu:results", chat_id=5, chat_type="private", user_id=5)
+    await app.on_menu_results(cq)
+
+    sent = [c for c in app.bot.send_message.await_args_list if c.args and c.args[0] == 5]
+    assert sent and not any("Обновил" in c.args[1] for c in sent)
 
 
 # --- admin gate + group silence ------------------------------
