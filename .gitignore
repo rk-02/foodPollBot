@@ -172,3 +172,9 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+# Runtime state written by the bot (kept out of git)
+config.json
+poll_state.json
+dm_users.json
+debug-*.log
