@@ -40,14 +40,6 @@ def test_migrate_history_skips_non_dict_and_invalid_date(storage):
     assert list(hist["2"]) == ["2025-05-05"]
 
 
-@pytest.mark.unit
-def test_usual_picks_ignores_bad_iso_values(storage):
-    storage.save_history({"5": {"oops": {"Гарниры": "Рис"}}})
-    assert stats.usual_picks(storage, 5) == {
-        "enough": False, "picks": {}, "span_days": 0, "records": 0, "counts": {},
-    }
-
-
 # --- polls guards --------------------------------------------
 
 @pytest.mark.unit
@@ -90,17 +82,28 @@ async def test_menu_results_survives_delete_error(app, make_cq):
     cq.answer.assert_awaited_once()
 
 
+def _usual_ready(app):
+    cfg = app.storage.load_config()
+    cfg["poll_rounds"] = {str(wd): 2 for wd in range(5)}
+    app.storage.save_config(cfg)
+
+
+def _history_all_days(app, user_id, picks):
+    today = date.today()
+    app.storage.save_history({str(user_id): {
+        (today - timedelta(days=d)).isoformat(): dict(picks) for d in range(1, 22)
+    }})
+
+
 @pytest.mark.asyncio
 async def test_usual_skips_category_without_live_entry(app, make_cq):
     # live poll exists but only for Гарниры; history also has Вторые блюда
+    _usual_ready(app)
     date_str, iso = current_poll_date(app.storage)
-    polls.start_day(app.storage, date_str, iso, 0)
+    polls.start_day(app.storage, date_str, iso, 2)
     polls.register_poll(app.storage, date_str, "Гарниры", 1, ["Рис", "Гречка"])
-    today = date.today()
-    app.storage.save_history({"6": {
-        (today - timedelta(days=d)).isoformat(): {"Вторые блюда": "Гуляш", "Гарниры": "Рис"}
-        for d in range(1, 21)
-    }})
+    _history_all_days(app, 6, {"Вторые блюда": "Гуляш", "Гарниры": "Рис"})
+
     cq = make_cq("menu:usual", chat_id=-100, chat_type="supergroup", user_id=6)
     await app.on_usual(cq)
     votes = polls.user_votes(app.storage, date_str).get(6, {})
@@ -109,13 +112,11 @@ async def test_usual_skips_category_without_live_entry(app, make_cq):
 
 @pytest.mark.asyncio
 async def test_usual_survives_keyboard_edit_error(app, make_cq):
+    _usual_ready(app)
     date_str, iso = current_poll_date(app.storage)
-    polls.start_day(app.storage, date_str, iso, 0)
+    polls.start_day(app.storage, date_str, iso, 2)
     polls.register_poll(app.storage, date_str, "Гарниры", 1, ["Рис"])
-    today = date.today()
-    app.storage.save_history({"6": {
-        (today - timedelta(days=d)).isoformat(): {"Гарниры": "Рис"} for d in range(1, 21)
-    }})
+    _history_all_days(app, 6, {"Гарниры": "Рис"})
     app.bot.edit_message_reply_markup = AsyncMock(side_effect=_bad)
     cq = make_cq("menu:usual", chat_id=-100, chat_type="supergroup", user_id=6)
     await app.on_usual(cq)

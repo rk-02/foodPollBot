@@ -225,16 +225,20 @@ def user_votes(storage: Storage, date: str) -> dict:
     return result
 
 
-# Categories shown in the grouped result (no soup; second + side are merged
-# into a single "Вторые блюда + гарниры" combo tally).
-RESULT_CATEGORIES = ("Вторые блюда", "Гарниры", "Салаты")
-
-
 def _combo_key(picks: dict) -> str | None:
     second, side = picks.get("Вторые блюда"), picks.get("Гарниры")
     if second and side:
         return f"{second} + {side}"
     return second or side or None
+
+
+def _tally(entry: dict) -> list:
+    counts = [
+        (opt, len(entry.get("votes", {}).get(opt, [])))
+        for opt in entry["options"]
+    ]
+    counts = [c for c in counts if c[1] > 0]
+    return sorted(counts, key=lambda c: (-c[1], c[0].lower()))
 
 
 def results_text(storage: Storage, date: str) -> str:
@@ -244,9 +248,17 @@ def results_text(storage: Storage, date: str) -> str:
 
     lines = [f"🗓 {date}", ""]
     any_votes = False
-    combos = user_votes(storage, date)
+
+    # Первые блюда — обычным подсчётом
+    soup = day["categories"].get("Первые блюда")
+    if soup and (tallies := _tally(soup)):
+        any_votes = True
+        lines.append(f"{CATEGORY_EMOJI['Первые блюда']} Первые блюда:")
+        lines += [f"  • {opt}: {n}" for opt, n in tallies]
+        lines.append("")
 
     # Второе + гарнир — комбинациями, а не по отдельности
+    combos = user_votes(storage, date)
     combo_counter = Counter()
     for picks in combos.values():
         key = _combo_key(picks)
@@ -261,23 +273,16 @@ def results_text(storage: Storage, date: str) -> str:
 
     # Салаты — обычным подсчётом
     salad = day["categories"].get("Салаты")
-    if salad:
-        tallies = [
-            (opt, len(salad.get("votes", {}).get(opt, [])))
-            for opt in salad["options"]
-        ]
-        tallies = [t for t in tallies if t[1] > 0]
-        if tallies:
-            any_votes = True
-            lines.append(f"{CATEGORY_EMOJI['Салаты']} Салаты:")
-            for opt, n in sorted(tallies, key=lambda t: (-t[1], t[0].lower())):
-                lines.append(f"  • {opt}: {n}")
-            lines.append("")
+    if salad and (tallies := _tally(salad)):
+        any_votes = True
+        lines.append(f"{CATEGORY_EMOJI['Салаты']} Салаты:")
+        lines += [f"  • {opt}: {n}" for opt, n in tallies]
+        lines.append("")
 
-    # По людям (без супа)
+    # По людям — полный набор
     people = [
         (uid, picks) for uid, picks in combos.items()
-        if any(picks.get(c) for c in RESULT_CATEGORIES)
+        if any(picks.get(c) for c in CATEGORIES)
     ]
     if people:
         any_votes = True
@@ -286,7 +291,7 @@ def results_text(storage: Storage, date: str) -> str:
         lines.append("👥 По людям:")
         for i, (uid, picks) in enumerate(people, 1):
             name = names.get(str(uid), f"ID{uid}")
-            parts = [picks[c] for c in RESULT_CATEGORIES if picks.get(c)]
+            parts = [picks[c] for c in CATEGORIES if picks.get(c)]
             lines.append(f"{i}. {name} — " + " + ".join(parts))
 
     if not any_votes:

@@ -122,17 +122,52 @@ def seeded_poll(app):
 
 @pytest.fixture
 def live_poll(app):
-    """A live poll set for whatever date current_poll_date() resolves to now."""
+    """A live poll set for whatever date current_poll_date() resolves to now.
+
+    ``menu_weekday`` is fixed to 2 (Wednesday) so weekday-aware history helpers
+    line up regardless of the real calendar day.
+    """
     from app import polls
     from app.timeutil import current_poll_date
 
     date, iso = current_poll_date(app.storage)
-    polls.start_day(app.storage, date, iso, 0)
+    polls.start_day(app.storage, date, iso, 2)
     polls.register_poll(app.storage, date, "Первые блюда", 601, ["Куриный", "Щи"])
     polls.register_poll(app.storage, date, "Вторые блюда", 602, ["Гуляш", "Тефтели"])
     polls.register_poll(app.storage, date, "Гарниры", 603, ["Рис", "Гречка"])
     polls.register_poll(app.storage, date, "Салаты", 604, ["Зимний", "Обжорка"])
     return date
+
+
+@pytest.fixture
+def usual_ready(app):
+    """Mark the "Мне как обычно" button as unlocked (2 rounds per weekday)."""
+    cfg = app.storage.load_config()
+    cfg["poll_rounds"] = {str(wd): 2 for wd in range(5)}
+    app.storage.save_config(cfg)
+    return app
+
+
+@pytest.fixture
+def history_on_weekday():
+    """Build a user's order history on N recent occurrences of one weekday."""
+    from datetime import date, timedelta
+
+    def _mk(app, user_id, picks, weekday=2, occurrences=3):
+        today = date.today()
+        # most recent past date on `weekday`
+        back = (today.weekday() - weekday) % 7 or 7
+        anchor = today - timedelta(days=back)
+        hist = {
+            (anchor - timedelta(weeks=k)).isoformat(): dict(picks)
+            for k in range(occurrences)
+        }
+        store = app.storage.load_history()
+        store[str(user_id)] = hist
+        app.storage.save_history(store)
+        return hist
+
+    return _mk
 
 
 @pytest.fixture

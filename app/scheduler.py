@@ -27,6 +27,7 @@ async def send_poll_set(app, moment=None):
     day_menu = get_day_menu(app.storage, poll_index)
     polls.start_day(app.storage, date, iso, poll_index)
 
+    sent_any = False
     for category in CATEGORIES:
         options = day_menu.get(category, [])
         if not options:
@@ -39,6 +40,10 @@ async def send_poll_set(app, moment=None):
             ),
         )
         polls.register_poll(app.storage, date, category, msg.message_id, options)
+        sent_any = True
+
+    if sent_any:
+        stats.record_poll_round(app.storage, poll_index)
 
     menu_msg = await app._refresh_action_menu(app.chat_id, private=False)
     polls.set_action_menu_message(app.storage, date, menu_msg.message_id)

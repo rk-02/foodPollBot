@@ -1,24 +1,34 @@
 """Order history + the "Мне как обычно" computation.
 
 ``orders_history.json`` maps ``user_id -> ISO-date -> {category: option}``.
+
+"Мне как обычно" is **weekday-aware**: it looks at what the user usually takes
+on *this* day of the week, and only falls back to their all-days history when a
+weekday favourite is missing from today's menu.
+
+The button itself is hidden until every weekday (Mon-Fri) has collected at
+least ``USUAL_MIN_ROUNDS`` poll rounds (~2 weeks) — counted in
+``config.json["poll_rounds"]``.
 """
 
 import re
 from collections import Counter
 from datetime import date, datetime, timedelta
 
-from .config import CATEGORIES, USUAL_MIN_DAYS, USUAL_WINDOW_DAYS
+from .config import CATEGORIES, USUAL_WINDOW_DAYS
 from .storage import Storage
 
 _ISO_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _DDMM_RE = re.compile(r"^(\d{1,2})[.\-/](\d{1,2})$")
 
+USUAL_MIN_ROUNDS = 2          # per weekday, before the button appears
+USUAL_MIN_WEEKDAY_RECORDS = 2  # personal same-weekday orders for a confident answer
+
+
+# --- history migration / recording ---------------------------------
 
 def migrate_history(storage: Storage, assume_year: int | None = None) -> bool:
-    """Re-key legacy ``dd.mm`` history entries to full ISO dates.
-
-    Idempotent; returns True if anything changed.
-    """
+    """Re-key legacy ``dd.mm`` history entries to full ISO dates. Idempotent."""
     assume_year = assume_year or date.today().year
     history = storage.load_history()
     changed = False
@@ -34,14 +44,12 @@ def migrate_history(storage: Storage, assume_year: int | None = None) -> bool:
             if m:
                 day_, month = int(m.group(1)), int(m.group(2))
                 try:
-                    iso = date(assume_year, month, day_).isoformat()
-                    new_entries[iso] = value
+                    new_entries[date(assume_year, month, day_).isoformat()] = value
                     changed = True
                     continue
                 except ValueError:
                     pass
-            # unparseable legacy key -> drop it
-            changed = True
+            changed = True  # unparseable legacy key -> drop it
         history[user_id] = new_entries
     if changed:
         storage.save_history(history)
@@ -51,16 +59,34 @@ def migrate_history(storage: Storage, assume_year: int | None = None) -> bool:
 def record_orders(storage: Storage, iso_date: str, votes_by_user: dict,
                   names: dict | None = None) -> None:
     """Persist the final per-user picks for a day into the history."""
-    names = names or {}
     history = storage.load_history()
     for user_id, picks in votes_by_user.items():
         clean = {c: picks[c] for c in CATEGORIES if picks.get(c)}
         if not clean:
             continue
-        bucket = history.setdefault(str(user_id), {})
-        bucket[iso_date] = clean
+        history.setdefault(str(user_id), {})[iso_date] = clean
     storage.save_history(history)
 
+
+# --- poll-round counter (gates the "Мне как обычно" button) ------
+
+def record_poll_round(storage: Storage, weekday: int) -> None:
+    cfg = storage.load_config()
+    rounds = cfg.setdefault("poll_rounds", {})
+    rounds[str(weekday)] = int(rounds.get(str(weekday), 0)) + 1
+    storage.save_config(cfg)
+
+
+def poll_rounds(storage: Storage) -> dict:
+    raw = storage.load_config().get("poll_rounds", {})
+    return {wd: int(raw.get(str(wd), 0)) for wd in range(5)}
+
+
+def usual_button_ready(storage: Storage) -> bool:
+    return all(n >= USUAL_MIN_ROUNDS for n in poll_rounds(storage).values())
+
+
+# --- "Мне как обычно" ------------------------------------------
 
 def _parse_iso(key: str):
     try:
@@ -69,44 +95,65 @@ def _parse_iso(key: str):
         return None
 
 
-def usual_picks(storage: Storage, user_id: int, today: date | None = None) -> dict:
-    """Most frequent pick per category for a user.
+def _ranked(source: dict, category: str) -> list:
+    counter = Counter(v[category] for v in source.values() if v.get(category))
+    return [opt for opt, _ in counter.most_common()]
 
-    Returns::
 
-        {"enough": bool, "picks": {category: option}, "span_days": int,
-         "records": int, "counts": {category: {option: n}}}
+def usual_picks(storage: Storage, user_id: int, weekday: int | None = None,
+                available: dict | None = None, today: date | None = None) -> dict:
+    """Resolve the user's "usual" pick per category for a given weekday.
 
-    ``enough`` is False when we have less than ``USUAL_MIN_DAYS`` between the
-    first and last recorded order (spec: "меньше 2 недель").
+    Per category the candidate order is: most frequent on *this weekday* first,
+    then most frequent across all days.  With ``available`` given, the first
+    candidate that is actually on today's poll wins; a category with no usable
+    candidate is left out.
+
+    Returns ``{"picks": {cat: opt}, "weekday_records": int, "enough": bool,
+    "fallbacks": [cat, ...]}`` where ``fallbacks`` lists categories whose
+    weekday favourite was unavailable and a runner-up was taken instead.
     """
     today = today or date.today()
     raw = storage.load_history().get(str(user_id), {})
-    dated = {d: v for d, v in raw.items() if _parse_iso(d) and isinstance(v, dict)}
+    dated = {}
+    for key, value in raw.items():
+        parsed = _parse_iso(key)
+        if parsed and isinstance(value, dict):
+            dated[parsed] = value
     if not dated:
-        return {"enough": False, "picks": {}, "span_days": 0, "records": 0, "counts": {}}
-
-    days = sorted(_parse_iso(d) for d in dated)
-    span_days = (days[-1] - days[0]).days
+        return {"picks": {}, "weekday_records": 0, "enough": False, "fallbacks": []}
 
     window_start = today - timedelta(days=USUAL_WINDOW_DAYS)
-    recent = {d: v for d, v in dated.items() if _parse_iso(d) >= window_start}
-    source = recent or dated
+    windowed = {d: v for d, v in dated.items() if d >= window_start} or dated
+    same_wd = {
+        d: v for d, v in windowed.items()
+        if weekday is None or d.weekday() == weekday
+    }
 
-    counts: dict[str, Counter] = {}
     picks: dict[str, str] = {}
-    for cat in CATEGORIES:
-        c = Counter(v[cat] for v in source.values() if v.get(cat))
-        if c:
-            counts[cat] = dict(c)
-            picks[cat] = c.most_common(1)[0][0]
+    fallbacks: list[str] = []
+    for category in CATEGORIES:
+        wd_ranked = _ranked(same_wd, category)
+        all_ranked = _ranked(windowed, category)
+        ordered = wd_ranked + [o for o in all_ranked if o not in wd_ranked]
+        if not ordered:
+            continue
+        if available is None:
+            picks[category] = ordered[0]
+            continue
+        menu_options = available.get(category) or []
+        chosen = next((o for o in ordered if o in menu_options), None)
+        if chosen is None:
+            continue
+        picks[category] = chosen
+        if wd_ranked and chosen != wd_ranked[0]:
+            fallbacks.append(category)
 
     return {
-        "enough": span_days >= USUAL_MIN_DAYS,
         "picks": picks,
-        "span_days": span_days,
-        "records": len(dated),
-        "counts": counts,
+        "weekday_records": len(same_wd),
+        "enough": len(same_wd) >= USUAL_MIN_WEEKDAY_RECORDS,
+        "fallbacks": fallbacks,
     }
 
 

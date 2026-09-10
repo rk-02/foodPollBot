@@ -68,27 +68,27 @@ async def test_poll_vote_inactive_poll(app, make_cq):
 # --- "мне как обычно" ------------------------------------------
 
 @pytest.mark.asyncio
-async def test_usual_no_history_alerts(app, live_poll, make_cq):
+async def test_usual_button_locked_until_two_weeks(app, live_poll, make_cq, history_on_weekday):
+    history_on_weekday(app, 9, {"Вторые блюда": "Гуляш"}, weekday=2, occurrences=3)
+    cq = make_cq("menu:usual", chat_id=-100, chat_type="supergroup", user_id=9)
+    await app.on_usual(cq)  # poll_rounds not set -> button not ready
+    assert cq.answer.await_args.kwargs.get("show_alert") is True
+    assert "2 недели" in cq.answer.await_args.args[0]
+    assert polls.user_votes(app.storage, live_poll).get(9) is None
+
+
+@pytest.mark.asyncio
+async def test_usual_no_history_alerts(app, live_poll, usual_ready, make_cq):
     cq = make_cq("menu:usual", chat_id=-100, chat_type="supergroup", user_id=9)
     await app.on_usual(cq)
     cq.answer.assert_awaited_once()
     assert cq.answer.await_args.kwargs.get("show_alert") is True
 
 
-def _fill_history(app, user_id, dish_by_cat, days):
-    today = date.today()
-    hist = {
-        (today - timedelta(days=d)).isoformat(): dict(dish_by_cat)
-        for d in range(days, 0, -1)
-    }
-    store = app.storage.load_history()
-    store[str(user_id)] = hist
-    app.storage.save_history(store)
-
-
 @pytest.mark.asyncio
-async def test_usual_enough_data_casts_votes_and_dms(app, live_poll, make_cq):
-    _fill_history(app, 9, {"Вторые блюда": "Гуляш", "Гарниры": "Рис"}, days=20)
+async def test_usual_votes_by_weekday_and_dms(app, live_poll, usual_ready, make_cq, history_on_weekday):
+    history_on_weekday(app, 9, {"Вторые блюда": "Гуляш", "Гарниры": "Рис"},
+                       weekday=2, occurrences=3)
 
     cq = make_cq("menu:usual", chat_id=-100, chat_type="supergroup", user_id=9)
     await app.on_usual(cq)
@@ -96,45 +96,61 @@ async def test_usual_enough_data_casts_votes_and_dms(app, live_poll, make_cq):
     votes = polls.user_votes(app.storage, live_poll).get(9, {})
     assert votes.get("Вторые блюда") == "Гуляш"
     assert votes.get("Гарниры") == "Рис"
-    dm_calls = [c for c in app.bot.send_message.await_args_list if c.args and c.args[0] == 9]
-    assert dm_calls and "обычный набор" in dm_calls[0].args[1]
+    dm = [c for c in app.bot.send_message.await_args_list if c.args and c.args[0] == 9]
+    assert dm and "обычный набор на" in dm[0].args[1]
     cq.answer.assert_awaited()
 
 
 @pytest.mark.asyncio
-async def test_usual_partial_data_still_votes_but_notes_shortage(app, live_poll, make_cq):
-    _fill_history(app, 4, {"Вторые блюда": "Гуляш"}, days=3)
+async def test_usual_few_weekday_records_notes_overall_stats(app, live_poll, usual_ready,
+                                                             make_cq, history_on_weekday):
+    history_on_weekday(app, 4, {"Вторые блюда": "Гуляш"}, weekday=2, occurrences=1)
 
     cq = make_cq("menu:usual", chat_id=-100, chat_type="supergroup", user_id=4)
     await app.on_usual(cq)
 
-    dm_calls = [c for c in app.bot.send_message.await_args_list if c.args and c.args[0] == 4]
-    assert dm_calls and "недостаточно данных" in dm_calls[0].args[1]
+    dm = [c for c in app.bot.send_message.await_args_list if c.args and c.args[0] == 4]
+    assert dm and "общей статистики" in dm[0].args[1]
     assert polls.user_votes(app.storage, live_poll).get(4, {}).get("Вторые блюда") == "Гуляш"
 
 
 @pytest.mark.asyncio
-async def test_usual_dm_blocked_falls_back_to_alert(app, live_poll, make_cq, monkeypatch):
-    _fill_history(app, 3, {"Гарниры": "Рис"}, days=20)
+async def test_usual_dm_blocked_falls_back_to_alert(app, live_poll, usual_ready,
+                                                    make_cq, monkeypatch, history_on_weekday):
+    history_on_weekday(app, 3, {"Гарниры": "Рис"}, weekday=2, occurrences=3)
     monkeypatch.setattr(app, "_safe_dm", AsyncMock(return_value=False))
 
     cq = make_cq("menu:usual", chat_id=-100, chat_type="supergroup", user_id=3)
     await app.on_usual(cq)
 
     assert cq.answer.await_args.kwargs.get("show_alert") is True
-    # the vote was still cast
     assert polls.user_votes(app.storage, live_poll).get(3, {}).get("Гарниры") == "Рис"
 
 
 @pytest.mark.asyncio
-async def test_usual_pick_missing_from_todays_menu_is_reported(app, live_poll, make_cq):
-    _fill_history(app, 8, {"Гарниры": "Картофель фри"}, days=20)  # not on today's poll
+async def test_usual_favourite_not_in_menu_uses_fallback(app, live_poll, usual_ready,
+                                                         make_cq, history_on_weekday):
+    # 3 Wednesdays of "Картофель фри" (not on today's poll) + 1 other day "Рис"
+    hist = history_on_weekday(app, 8, {"Гарниры": "Картофель фри"}, weekday=2, occurrences=3)
+    from datetime import date, timedelta
+    other = (date.today() - timedelta(days=1)).isoformat()
+    store = app.storage.load_history()
+    store["8"][other] = {"Гарниры": "Рис"}
+    app.storage.save_history(store)
 
     cq = make_cq("menu:usual", chat_id=-100, chat_type="supergroup", user_id=8)
     await app.on_usual(cq)
 
-    dm_calls = [c for c in app.bot.send_message.await_args_list if c.args and c.args[0] == 8]
-    assert dm_calls and "нет в меню" in dm_calls[0].args[1]
+    assert polls.user_votes(app.storage, live_poll).get(8, {}).get("Гарниры") == "Рис"
+    dm = [c for c in app.bot.send_message.await_args_list if c.args and c.args[0] == 8]
+    assert dm and "взял ближайшее" in dm[0].args[1]
+
+
+@pytest.mark.asyncio
+async def test_usual_no_live_poll(app, usual_ready, make_cq):
+    cq = make_cq("menu:usual", chat_id=-100, chat_type="supergroup", user_id=9)
+    await app.on_usual(cq)
+    assert cq.answer.await_args.kwargs.get("show_alert") is True
 
 
 # --- results ---------------------------------------------------

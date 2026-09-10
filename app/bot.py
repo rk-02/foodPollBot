@@ -9,7 +9,7 @@ from aiogram.filters import Command
 from aiogram.types import CallbackQuery, Message
 
 from . import admin, dishes, menu, polls, scheduler, stats
-from .config import BOT_TOKEN, CATEGORIES, CHAT_ID, TIMEZONE
+from .config import BOT_TOKEN, CATEGORIES, CHAT_ID, TIMEZONE, WEEKDAYS
 from .menu_config import get_day_menu  # noqa: F401  (re-exported for convenience)
 from .storage import Storage
 from .timeutil import current_poll_date, now
@@ -129,8 +129,25 @@ class FoodPollBot:
 
     async def on_usual(self, cq: CallbackQuery) -> None:
         user = cq.from_user
-        date, iso = current_poll_date(self.storage)
-        res = stats.usual_picks(self.storage, user.id, now(self.tz).date())
+        if not stats.usual_button_ready(self.storage):
+            await cq.answer(
+                "«Мне как обычно» появится, когда наберётся история за 2 недели "
+                "(по 2 опроса на каждый будний день).",
+                show_alert=True,
+            )
+            return
+
+        date, _iso = current_poll_date(self.storage)
+        day = polls.get_day(self.storage, date)
+        if not day or not day.get("categories"):
+            await cq.answer("Сейчас нет активного опроса.", show_alert=True)
+            return
+
+        weekday = day.get("menu_weekday")
+        available = {cat: entry["options"] for cat, entry in day["categories"].items()}
+        res = stats.usual_picks(
+            self.storage, user.id, weekday, available, now(self.tz).date(),
+        )
         picks = res["picks"]
         if not picks:
             await cq.answer(
@@ -139,14 +156,12 @@ class FoodPollBot:
             )
             return
 
-        applied = []
         for category, option in picks.items():
-            if polls.set_vote(self.storage, date, category, option, user.id):
-                applied.append(category)
+            polls.set_vote(self.storage, date, category, option, user.id)
         polls.remember_name(self.storage, date, user.id, self._display_name(user))
 
         day = polls.get_day(self.storage, date) or {"categories": {}}
-        for category in applied:
+        for category in picks:
             entry = day["categories"].get(category)
             if not entry:
                 continue
@@ -159,19 +174,22 @@ class FoodPollBot:
             except TelegramBadRequest:
                 pass
 
+        wd_name = (WEEKDAYS[weekday].lower()
+                   if isinstance(weekday, int) and 0 <= weekday < len(WEEKDAYS)
+                   else "этот день")
         if res["enough"]:
-            head = "🔁 Готово! Ваш обычный набор:"
+            head = f"🔁 Ваш обычный набор на {wd_name}:"
         else:
-            head = (
-                f"ℹ️ Пока недостаточно данных для «как обычно» "
-                f"(история {res['span_days']} дн., нужно {stats.USUAL_MIN_DAYS}). "
-                f"Проголосовал(а) по тому, что есть:"
-            )
+            head = f"ℹ️ Заказов по «{wd_name}» пока мало — взял из общей статистики:"
         body = [head, stats.format_picks(picks)]
-        not_in_menu = [picks[c] for c in picks if c not in applied
-                       and picks[c] not in _current_options(day, c)]
-        if not_in_menu:
-            body.append("\nСегодня нет в меню: " + ", ".join(not_in_menu))
+        if res["fallbacks"]:
+            body.append(
+                "\nПривычного не было в меню, взял ближайшее: "
+                + ", ".join(res["fallbacks"])
+            )
+        no_data = [c for c in CATEGORIES if c not in picks]
+        if no_data:
+            body.append("\nНет данных по: " + ", ".join(no_data))
 
         if await self._safe_dm(user.id, "\n".join(body)):
             await cq.answer("Детали отправил(а) в личку.")
@@ -227,8 +245,3 @@ class FoodPollBot:
             self.poll_chats.add(self.chat_id)
             await self.start_scheduler()
         await self.dp.start_polling(self.bot)
-
-
-def _current_options(day: dict, category: str) -> list:
-    entry = day.get("categories", {}).get(category)
-    return entry["options"] if entry else []

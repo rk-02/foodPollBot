@@ -106,7 +106,7 @@ def test_describe_change_multi_add_remove(storage):
 
 
 @pytest.mark.unit
-def test_results_text_merges_second_side_drops_soup(storage):
+def test_results_text_keeps_soup_merges_second_side_and_people(storage):
     polls.start_day(storage, "10.09", "2026-09-10", 2)
     polls.register_poll(storage, "10.09", "Первые блюда", 1, ["Куриный", "Щи"])
     polls.register_poll(storage, "10.09", "Вторые блюда", 2, ["Гуляш", "Тефтели"])
@@ -125,18 +125,17 @@ def test_results_text_merges_second_side_drops_soup(storage):
 
     text = polls.results_text(storage, "10.09")
     assert "🗓 10.09" in text
-    # merged second + side tally
+    # soup is back, as its own tally
+    assert "🍲 Первые блюда:" in text and "Куриный: 1" in text
+    # second + side merged, not separate
     assert "🍽 Вторые блюда + гарниры:" in text
     assert "Гуляш + Гречка: 1" in text
     assert "Гуляш + Рис: 1" in text
-    # no soup, no standalone second/side sections
-    assert "Куриный" not in text
-    assert "Первые блюда" not in text
     assert "🍚 Гарниры:" not in text
     # salads kept
     assert "🥗 Салаты:" in text and "Зимний: 1" in text
-    # per-person, soup excluded
-    assert "Иван — Гуляш + Гречка + Зимний" in text
+    # per-person, full set including soup
+    assert "Иван — Куриный + Гуляш + Гречка + Зимний" in text
     assert "Пётр — Гуляш + Рис" in text
 
 
@@ -151,14 +150,21 @@ def test_results_text_side_only_vote_still_shows(storage):
 
 
 @pytest.mark.unit
+def test_results_text_soup_only_vote_shows_soup(storage):
+    polls.start_day(storage, "10.09", "2026-09-10", 2)
+    polls.register_poll(storage, "10.09", "Первые блюда", 1, ["Куриный"])
+    polls.toggle_vote(storage, "10.09", 0, 0, 5)
+    polls.remember_name(storage, "10.09", 5, "Соло")
+    text = polls.results_text(storage, "10.09")
+    assert "🍲 Первые блюда:" in text and "Куриный: 1" in text
+    assert "Соло — Куриный" in text
+
+
+@pytest.mark.unit
 def test_results_text_no_data_and_no_votes(storage):
     assert "нет опросов" in polls.results_text(storage, "01.02").lower()
     polls.start_day(storage, "10.09", "2026-09-10", 2)
     polls.register_poll(storage, "10.09", "Гарниры", 1, ["Рис"])
-    assert "Нет голосов" in polls.results_text(storage, "10.09")
-    # a soup-only vote is not enough for the grouped result
-    polls.register_poll(storage, "10.09", "Первые блюда", 2, ["Куриный"])
-    polls.toggle_vote(storage, "10.09", 0, 0, 5)
     assert "Нет голосов" in polls.results_text(storage, "10.09")
 
 
