@@ -121,7 +121,7 @@ class FoodPollBot:
         category = CATEGORIES[cidx]
         try:
             await cq.message.edit_reply_markup(
-                reply_markup=polls.poll_keyboard(entry, category, date, cq.from_user.id)
+                reply_markup=polls.poll_keyboard(entry, category, date)
             )
         except TelegramBadRequest:
             pass
@@ -169,7 +169,7 @@ class FoodPollBot:
                 await self.bot.edit_message_reply_markup(
                     chat_id=cq.message.chat.id,
                     message_id=entry["message_id"],
-                    reply_markup=polls.poll_keyboard(entry, category, date, user.id),
+                    reply_markup=polls.poll_keyboard(entry, category, date),
                 )
             except TelegramBadRequest:
                 pass

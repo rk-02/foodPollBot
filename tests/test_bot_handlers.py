@@ -45,10 +45,10 @@ async def test_poll_vote_records_and_answers(app, seeded_poll, make_cq):
     assert app.storage.load_poll_state()["10.09"]["names"]["5"] == "Ира"
     cq.message.edit_reply_markup.assert_awaited_once()
     cq.answer.assert_awaited_once()
-    # the voter's own choice comes back highlighted
+    # the group keyboard is shared by everyone -> no per-voter highlight
     kb = cq.message.edit_reply_markup.await_args.kwargs["reply_markup"]
     labels = [b.text for row in kb.inline_keyboard for b in row]
-    assert any(t.startswith(polls.VOTE_MARK) for t in labels)
+    assert not any(t.startswith(polls.VOTE_MARK) for t in labels)
 
 
 @pytest.mark.asyncio
