@@ -92,6 +92,20 @@ python bot.py
 `TIMEZONE`, `POLL_START_HOUR`/`POLL_START_MINUTES` (стартовое время, дальше
 меняется в админке), `POLL_SHIFT`, `RESULTS_HOUR`/`RESULTS_MINUTE`.
 
+`bot.py` сам перезапускается при падении (сетевой сбой и т.п.) — см.
+`main()` в файле. Но это не переживает перезагрузку сервера и падение
+`nohup`-сессии целиком, поэтому в проде лучше через systemd:
+
+```bash
+sudo cp deploy/foodpollbot.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now foodpollbot
+```
+
+(поправь `WorkingDirectory`/`ExecStart` в юните, если репозиторий не в
+`/opt/foodPollBot`). Логи — `journalctl -u foodpollbot -f`, они не буферизуются
+и не пропадают, в отличие от `nohup ... > bot.log`.
+
 ## Архитектура
 
 ```

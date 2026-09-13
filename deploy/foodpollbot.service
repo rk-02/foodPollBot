@@ -1,0 +1,20 @@
+[Unit]
+Description=Food Poll Bot (Telegram)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Adjust if the repo lives somewhere else on this server.
+WorkingDirectory=/opt/foodPollBot
+ExecStart=/opt/foodPollBot/.venv/bin/python -u /opt/foodPollBot/bot.py
+Restart=always
+RestartSec=5
+User=root
+
+# journalctl -u foodpollbot -f
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
