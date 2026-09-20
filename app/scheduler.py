@@ -1,6 +1,7 @@
 """Daily loop: send the poll set at poll time, post + record results at 18:00.
 
-Weekends are completely silent.  Everything is dedup-keyed by calendar day so
+Silent when the meal day falls on a weekend (Fri/Sat with shift 1);
+Sunday evening still sends the poll for Monday.  Everything is dedup-keyed by calendar day so
 the 20-second tick can fire several times in the target minute harmlessly.
 """
 
@@ -68,7 +69,7 @@ async def send_results(app, moment=None):
 
 async def tick(app, moment=None):
     moment = moment or now()
-    if moment.weekday() >= 5:
+    if (moment.weekday() + POLL_SHIFT) % 7 >= 5:  # meal day is Sat/Sun
         return
     hour, minute = get_poll_time(app.storage)
     day_key = moment.date().isoformat()
