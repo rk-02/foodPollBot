@@ -91,10 +91,15 @@ async def test_menu_edit_save_persists_and_warns_group(app, make_cq, monkeypatch
     warn = [c for c in app.bot.send_message.await_args_list
             if c.args and c.args[0] == app.chat_id]
     assert not warn
+    preview = await _cb(app, make_cq, "adm:preview")
+    preview_text = preview.message.edit_text.await_args.args[0]
+    assert "Предпросмотр" in preview_text
+    assert "Изменения в меню" in preview_text
     await _cb(app, make_cq, "adm:notify")
     warn = [c for c in app.bot.send_message.await_args_list
             if c.args and c.args[0] == app.chat_id]
     assert len(warn) == 1 and "Изменения в меню" in warn[0].args[1]
+    assert warn[0].args[1] in preview_text
     await _cb(app, make_cq, "adm:notify")
     assert len([c for c in app.bot.send_message.await_args_list
                 if c.args and c.args[0] == app.chat_id]) == 1

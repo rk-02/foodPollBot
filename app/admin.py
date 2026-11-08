@@ -42,6 +42,7 @@ def render_root(app):
         [_btn("⏰ Время опроса", "adm:time")],
         [_btn("📋 Меню по дням", "adm:days")],
         [_btn("🍽 База блюд", "adm:dishes")],
+        [_btn("👁 Предпросмотр изменений", "adm:preview")],
         [_btn("📣 Отправить изменения опроса", "adm:notify")],
         [_btn("➕ Добавить голос", "adm:vote")],
         [_btn("🔄 Синхронизировать из schedule.json", "adm:sync")],
@@ -185,6 +186,20 @@ async def _propagate_menu_change(app, weekday: int, category: str, new_options: 
 
 # --- entry points ---------------------------------------------
 
+def pending_notification(app):
+    """Return the exact group message for the active poll, or an empty string."""
+    date, iso = current_poll_date(app.storage)
+    day = app.storage.load_poll_state().get(date, {})
+    changes = day.get("pending_changes", {}) if day.get("iso") == iso else {}
+    lines = []
+    for category, change in changes.items():
+        before, after = change["before"], change["after"]
+        diff = {"removed": [x for x in before if x not in after],
+                "added": [x for x in after if x not in before]}
+        if diff["removed"] or diff["added"]:
+            lines.append(polls.describe_change(category, date, diff))
+    return "\n\n".join(lines)
+
 async def handle_callback(app, cq) -> None:
     data = cq.data
     user_id = cq.from_user.id
@@ -202,23 +217,27 @@ async def handle_callback(app, cq) -> None:
         except TelegramBadRequest:
             pass
 
+    elif action == "preview":
+        preview = pending_notification(app)
+        await _show(cq, (
+            ("👁 Предпросмотр сообщения в группу:\n\n" + preview)
+            if preview else "Новых изменений для текущего опроса нет.",
+            _kb(([[_btn("📣 Отправить", "adm:notify")]] if preview else [])
+                + [[_btn("⬅️ Назад", "adm:root")]]),
+        ))
+
     elif action == "notify":
         date, iso = current_poll_date(app.storage)
         state = app.storage.load_poll_state()
         day = state.get(date, {})
-        changes = day.get("pending_changes", {}) if day.get("iso") == iso else {}
-        lines = []
-        for category, change in changes.items():
-            before, after = change["before"], change["after"]
-            diff = {"removed": [x for x in before if x not in after],
-                    "added": [x for x in after if x not in before]}
-            if diff["removed"] or diff["added"]:
-                lines.append(polls.describe_change(category, date, diff))
-        if lines:
-            await app.bot.send_message(app.chat_id, "\n\n".join(lines))
+        notification = pending_notification(app)
+        if notification:
+            await app.bot.send_message(app.chat_id, notification)
             day["pending_changes"] = {}
             app.storage.save_poll_state(state)
-        await cq.answer("Изменения отправлены." if lines else "Новых изменений нет.", show_alert=True)
+        await cq.answer("Изменения отправлены." if notification else "Новых изменений нет.", show_alert=True)
+        if cq.message.chat.type == "private":
+            await _show(cq, render_root(app))
 
     elif action == "vote":
         date, iso = current_poll_date(app.storage)
