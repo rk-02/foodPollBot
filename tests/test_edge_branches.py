@@ -134,8 +134,9 @@ async def test_admin_show_falls_back_to_answer(app, make_cq):
 
 
 @pytest.mark.asyncio
-async def test_admin_propagate_survives_markup_error(app, make_cq):
+async def test_admin_propagate_survives_markup_error(app, make_cq, monkeypatch):
     from app import menu_config
+    monkeypatch.setattr(admin, "current_poll_date", lambda storage: ("10.09", "2026-09-10"))
     menu_config.set_day_category(app.storage, 1, "Гарниры", ["Рис", "Гречка"])
     polls.start_day(app.storage, "10.09", "2026-09-10", 1)
     polls.register_poll(app.storage, "10.09", "Гарниры", 900, ["Рис", "Гречка"])
@@ -147,6 +148,7 @@ async def test_admin_propagate_survives_markup_error(app, make_cq):
     cq2 = make_cq("adm:msave", chat_id=5, chat_type="private", user_id=5)
     await admin.handle_callback(app, cq2)
 
+    await admin.handle_callback(app, make_cq("adm:notify", chat_id=5, user_id=5))
     warn = [c for c in app.bot.send_message.await_args_list
             if c.args and c.args[0] == app.chat_id]
     assert warn and "Изменения в меню" in warn[0].args[1]

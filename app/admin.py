@@ -17,6 +17,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from . import dishes, menu_config, polls
 from .config import CATEGORIES, WEEKDAYS
 from .menu_config import get_day_menu, get_poll_time_str
+from .timeutil import current_poll_date
 
 ADMIN_PREFIX = "adm:"
 
@@ -41,10 +42,27 @@ def render_root(app):
         [_btn("⏰ Время опроса", "adm:time")],
         [_btn("📋 Меню по дням", "adm:days")],
         [_btn("🍽 База блюд", "adm:dishes")],
+        [_btn("📣 Отправить изменения опроса", "adm:notify")],
+        [_btn("➕ Добавить голос", "adm:vote")],
         [_btn("🔄 Синхронизировать из schedule.json", "adm:sync")],
         [_btn("✖ Закрыть", "adm:close")],
     ])
     return text, kb
+
+
+def render_manual_vote(app, draft):
+    day = polls.get_day(app.storage, draft["date"])
+    rows = []
+    for ci, category in enumerate(CATEGORIES):
+        entry = day["categories"].get(category)
+        if not entry:
+            continue
+        for oi, option in enumerate(entry["options"]):
+            mark = "✅ " if draft["picks"].get(category) == option else ""
+            rows.append([_btn(f"{mark}{category}: {option}", f"adm:vpick:{ci}:{oi}")])
+    rows.append([_btn("💾 Добавить голос", "adm:vsave")])
+    rows.append([_btn("✖ Отмена", "adm:root")])
+    return f"Голос за {draft['name']} ({draft['date']}). Выберите по одному блюду в каждой категории.", _kb(rows)
 
 
 def render_days(app):
@@ -136,11 +154,15 @@ async def _propagate_menu_change(app, weekday: int, category: str, new_options: 
     """Apply an edited category to any live poll for that weekday and warn the
     group so people re-vote."""
     state = app.storage.load_poll_state()
+    current_date, current_iso = current_poll_date(app.storage)
     for date, day in state.items():
+        if date != current_date or day.get("iso") != current_iso:
+            continue
         if day.get("menu_weekday") != weekday:
             continue
         if category not in day.get("categories", {}):
             continue
+        original_options = list(day["categories"][category]["options"])
         diff = polls.apply_menu_change(app.storage, date, category, new_options)
         if not diff["live"] or (not diff["removed"] and not diff["added"]):
             continue
@@ -153,9 +175,12 @@ async def _propagate_menu_change(app, weekday: int, category: str, new_options: 
             )
         except TelegramBadRequest:
             pass
-        warning = polls.describe_change(category, date, diff)
-        if warning:
-            await app.bot.send_message(app.chat_id, warning)
+        state = app.storage.load_poll_state()
+        day = state[date]
+        changes = day.setdefault("pending_changes", {})
+        changes[category] = {"before": changes.get(category, {}).get("before", original_options),
+                             "after": list(new_options)}
+        app.storage.save_poll_state(state)
 
 
 # --- entry points ---------------------------------------------
@@ -176,6 +201,65 @@ async def handle_callback(app, cq) -> None:
             await cq.message.delete()
         except TelegramBadRequest:
             pass
+
+    elif action == "notify":
+        date, iso = current_poll_date(app.storage)
+        state = app.storage.load_poll_state()
+        day = state.get(date, {})
+        changes = day.get("pending_changes", {}) if day.get("iso") == iso else {}
+        lines = []
+        for category, change in changes.items():
+            before, after = change["before"], change["after"]
+            diff = {"removed": [x for x in before if x not in after],
+                    "added": [x for x in after if x not in before]}
+            if diff["removed"] or diff["added"]:
+                lines.append(polls.describe_change(category, date, diff))
+        if lines:
+            await app.bot.send_message(app.chat_id, "\n\n".join(lines))
+            day["pending_changes"] = {}
+            app.storage.save_poll_state(state)
+        await cq.answer("Изменения отправлены." if lines else "Новых изменений нет.", show_alert=True)
+
+    elif action == "vote":
+        date, iso = current_poll_date(app.storage)
+        day = polls.get_day(app.storage, date)
+        if not day or day.get("iso") != iso or not day.get("categories"):
+            await cq.answer("Сейчас нет активного опроса.", show_alert=True)
+        else:
+            app.pending[user_id] = {"kind": "manual_name", "date": date, "iso": iso}
+            await cq.message.answer("Введите имя человека, за которого добавляете голос.")
+
+    elif action == "vpick":
+        draft = app.pending.get(user_id)
+        if not draft or draft.get("kind") != "manual_pick":
+            await cq.answer("Начните с кнопки «Добавить голос».", show_alert=True)
+        else:
+            ci, oi = int(parts[2]), int(parts[3])
+            category = CATEGORIES[ci]
+            entry = polls.get_day(app.storage, draft["date"])["categories"][category]
+            draft["picks"][category] = entry["options"][oi]
+            await _show(cq, render_manual_vote(app, draft))
+
+    elif action == "vsave":
+        draft = app.pending.get(user_id)
+        date, iso = current_poll_date(app.storage)
+        if not draft or draft.get("kind") != "manual_pick" or (date, iso) != (draft["date"], draft["iso"]):
+            await cq.answer("Опрос уже не активен.", show_alert=True)
+        elif not draft["picks"]:
+            await cq.answer("Выберите хотя бы одно блюдо.", show_alert=True)
+        else:
+            uid = polls.add_guest_vote(app.storage, date, draft["name"], draft["picks"])
+            app.pending.pop(user_id, None)
+            day = polls.get_day(app.storage, date)
+            for category in draft["picks"]:
+                entry = day["categories"][category]
+                try:
+                    await app.bot.edit_message_reply_markup(chat_id=app.chat_id,
+                        message_id=entry["message_id"], reply_markup=polls.poll_keyboard(entry, category, date))
+                except TelegramBadRequest:
+                    pass
+            await _show(cq, render_root(app))
+            await cq.answer(f"Голос {draft['name']} добавлен.", show_alert=True)
 
     elif action == "time":
         app.pending[user_id] = {"kind": "time"}
@@ -284,6 +368,21 @@ async def handle_text(app, message) -> bool:
                     pass
 
     kind = pending.get("kind")
+    if kind == "manual_name":
+        name = (message.text or "").strip()
+        if not name:
+            await message.answer("Введите непустое имя.")
+            return True
+        date, iso = current_poll_date(app.storage)
+        if (date, iso) != (pending["date"], pending["iso"]):
+            app.pending.pop(user_id, None)
+            await message.answer("Опрос уже не активен.")
+            return True
+        app.pending[user_id] = {"kind": "manual_pick", "date": date, "iso": iso,
+                                "name": name, "picks": {}}
+        text, kb = render_manual_vote(app, app.pending[user_id])
+        await message.answer(text, reply_markup=kb)
+        return True
     if kind == "time":
         ok = menu_config.set_poll_time(app.storage, message.text or "")
         app.pending.pop(user_id, None)

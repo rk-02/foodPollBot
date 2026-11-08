@@ -71,7 +71,8 @@ async def test_menu_edit_navigation_and_toggle(app, make_cq):
 
 
 @pytest.mark.asyncio
-async def test_menu_edit_save_persists_and_warns_group(app, make_cq):
+async def test_menu_edit_save_persists_and_warns_group(app, make_cq, monkeypatch):
+    monkeypatch.setattr(admin, "current_poll_date", lambda storage: ("10.09", "2026-09-10"))
     # active menu + a matching live poll for weekday 1
     menu_config.set_day_category(app.storage, 1, "Вторые блюда", ["Гуляш", "Тефтели"])
     polls.start_day(app.storage, "10.09", "2026-09-10", 1)
@@ -89,8 +90,28 @@ async def test_menu_edit_save_persists_and_warns_group(app, make_cq):
 
     warn = [c for c in app.bot.send_message.await_args_list
             if c.args and c.args[0] == app.chat_id]
-    assert warn and "Изменения в меню" in warn[0].args[1]
+    assert not warn
+    await _cb(app, make_cq, "adm:notify")
+    warn = [c for c in app.bot.send_message.await_args_list
+            if c.args and c.args[0] == app.chat_id]
+    assert len(warn) == 1 and "Изменения в меню" in warn[0].args[1]
+    await _cb(app, make_cq, "adm:notify")
+    assert len([c for c in app.bot.send_message.await_args_list
+                if c.args and c.args[0] == app.chat_id]) == 1
     app.bot.edit_message_reply_markup.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_manual_guest_vote_appears_in_results(app, make_cq, make_message, monkeypatch):
+    monkeypatch.setattr(admin, "current_poll_date", lambda storage: ("10.09", "2026-09-10"))
+    polls.start_day(app.storage, "10.09", "2026-09-10", 2)
+    polls.register_poll(app.storage, "10.09", "Первые блюда", 900, ["Щи"])
+    await _cb(app, make_cq, "adm:vote")
+    await admin.handle_text(app, make_message(text="Иван", chat_id=5, user_id=5))
+    await _cb(app, make_cq, "adm:vpick:0:0")
+    await _cb(app, make_cq, "adm:vsave")
+    assert "Иван — Щи" in polls.results_text(app.storage, "10.09")
+    assert "Щи · 1" in str(polls.poll_keyboard(polls.get_day(app.storage, "10.09")["categories"]["Первые блюда"], "Первые блюда", "10.09"))
 
 
 @pytest.mark.asyncio

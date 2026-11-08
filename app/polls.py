@@ -170,6 +170,22 @@ def set_vote(storage: Storage, date: str, category: str, option: str, user_id: i
     return True
 
 
+def add_guest_vote(storage: Storage, date: str, name: str, picks: dict) -> int:
+    """Assign a distinct negative ID to a guest so results count their vote."""
+    state = _state(storage)
+    day = state[date]
+    ids = [int(uid) for uid in day.get("names", {}) if int(uid) < 0]
+    guest_id = min(ids, default=0) - 1
+    day.setdefault("names", {})[str(guest_id)] = name
+    for category, option in picks.items():
+        entry = day["categories"][category]
+        if option not in entry["options"]:
+            raise ValueError("Option is no longer available")
+        entry.setdefault("votes", {}).setdefault(option, []).append(guest_id)
+    storage.save_poll_state(state)
+    return guest_id
+
+
 # --- live menu edits ---------------------------------------------
 
 def apply_menu_change(storage: Storage, date: str, category: str, new_options: list) -> dict:
